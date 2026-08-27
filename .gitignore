@@ -1,0 +1,11 @@
+node_modules/
+.project_id
+.github_repo
+.env
+.env.*
+__pycache__/
+*.pyc
+backend/data/
+.DS_Store
+dist/
+.output/
