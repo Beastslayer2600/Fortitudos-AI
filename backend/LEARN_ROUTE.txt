@@ -1,0 +1,27 @@
+PASTE into backend/app.py inside class Handler.
+
+1) After log_message, add:
+
+    def cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.cors()
+        self.end_headers()
+
+2) In send_json, before end_headers(), add:  self.cors()
+
+3) In do_GET, BEFORE the line that returns Not found, add:
+
+            if parts[:2] == ["api", "learn"]:
+                from config import DOCS_DIR
+                files = []
+                if DOCS_DIR.exists():
+                    for pth in sorted(DOCS_DIR.rglob("*")):
+                        if pth.is_file() and pth.suffix.lower() in {".pdf", ".md", ".txt"}:
+                            files.append({"name": pth.relative_to(DOCS_DIR).as_posix(), "kind": "guide", "bytes": pth.stat().st_size})
+                conn = store.connect()
+                return self.send_json({"docs": files, "sources": [{"name": n, "pages": c} for n, c in store.sources(conn)], "how": ["Tell it a topic."]})
