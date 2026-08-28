@@ -3,6 +3,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import {
   BookOpen,
   FolderOpen,
+  Hammer,
   Inbox,
   LayoutGrid,
   Menu,
@@ -27,6 +28,7 @@ const NAV = [
   { to: "/dropzone", label: "Drop zone", icon: Inbox },
   { to: "/social", label: "Social Studio", icon: Sparkles },
   { to: "/adjudication", label: "Adjudication", icon: Theater },
+  { to: "/craft", label: "Craft", icon: Hammer },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -116,7 +118,18 @@ function NavBody({
         <p className="px-2 pt-5 pb-1 text-[10px] tracking-[0.2em] text-subtle uppercase">
           Studio
         </p>
-        {NAV.slice(7).map((item) => (
+        {NAV.slice(7, 8).map((item) => (
+          <NavLink
+            key={item.to}
+            item={item}
+            pathname={pathname}
+            onNavigate={onNavigate}
+          />
+        ))}
+        <p className="px-2 pt-5 pb-1 text-[10px] tracking-[0.2em] text-subtle uppercase">
+          Craft
+        </p>
+        {NAV.slice(8).map((item) => (
           <NavLink
             key={item.to}
             item={item}
