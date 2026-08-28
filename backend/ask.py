@@ -3,12 +3,6 @@ Fortitudo AI - ask
 
 Hybrid retrieval (dense + BM25 + RRF) over the page index, then a grounded
 answer from the local model with page citations.
-
-Usage:
-    python ask.py                        # interactive
-    python ask.py "your question"        # one-shot
-    python ask.py --sources              # list indexed documents
-    python ask.py --show "question"      # show retrieved pages, no LLM
 """
 import argparse
 import sys
@@ -19,18 +13,53 @@ from llm import chat, health, has_model, OllamaError
 from config import SYSTEM_PROMPT, CHAT_MODEL, EMBED_MODEL
 
 
-def answer(conn, question):
-    results = search(conn, question)
-    if not results:
+def rewrite_query(question, history=None):
+    """Keep follow-ups grounded in the last product names and page cites."""
+    parts = [question]
+    if history:
+        for turn in history[-6:]:
+            text = str(turn.get("content", "")).strip()
+            if not text:
+                continue
+            parts.append(text[:400])
+    blob = " ".join(parts)
+    return f"{question}\n{blob}"[:1500]
+
+
+def answer(conn, question, history=None, client_excerpt=""):
+    lookup = rewrite_query(question, history)
+    results = search(conn, lookup) or search(conn, question)
+    if not results and not client_excerpt:
         return "Nothing indexed yet. Run:  python ingest.py", []
 
-    context = build_context(results)
+    context = build_context(results) if results else "(no product pages retrieved)"
+    prior = ""
+    if history:
+        turns = []
+        for turn in history[-8:]:
+            role = str(turn.get("role", "user"))
+            text = str(turn.get("content", "")).strip()[:900]
+            if text:
+                turns.append(f"{role}: {text}")
+        if turns:
+            prior = "Earlier in this chat (keep these pages and names live):\n" + "\n".join(turns) + "\n\n"
+    client_block = ""
+    if client_excerpt:
+        client_block = (
+            "\n\nClient-file extracts (filed documents only — not product guides):\n"
+            + client_excerpt[:12000]
+            + "\n"
+        )
     user = (
-        f"Document extracts:\n\n{context}\n\n"
+        f"{prior}"
+        f"Product-guide extracts:\n\n{context}\n"
+        f"{client_block}"
         f"---\n\nAdviser's question: {question}\n\n"
         "Answer from the extracts above only. For every figure, percentage, "
         "waiting period or definition, cite SOURCE and PAGE exactly as labelled. "
-        "If the extracts do not contain the answer, say so plainly — do not infer."
+        "If a fact comes from a client file, say so and name the file. "
+        "If the extracts do not contain the answer, say so plainly — do not infer. "
+        "Keep continuity with earlier turns; do not drop a cited page the adviser is still using."
     )
     return chat(SYSTEM_PROMPT, user), results
 
@@ -90,6 +119,7 @@ def main():
 
     print(f"\nFortitudo AI  -  {CHAT_MODEL}  -  fully offline")
     print("Ask a product question. Ctrl+C or 'quit' to exit.\n")
+    history = []
     while True:
         try:
             q = input("> ").strip()
@@ -101,9 +131,11 @@ def main():
         if not q:
             continue
         try:
-            text, results = answer(conn, q)
+            text, results = answer(conn, q, history=history)
             print(f"\n{text}\n")
             print_citations(results)
+            history.append({"role": "user", "content": q})
+            history.append({"role": "assistant", "content": text})
         except OllamaError as e:
             print(f"\nERROR: {e}\n")
         except Exception as e:

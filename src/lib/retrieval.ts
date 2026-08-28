@@ -30,9 +30,14 @@ function tokens(text: string) {
     .filter((t) => t.length > 2 && !STOP.has(t));
 }
 
-export function searchPages(query: string, topK = 3): AskCitation[] {
+export function searchPages(
+  query: string,
+  topK = 4,
+  pinned: AskCitation[] = [],
+): AskCitation[] {
   const q = tokens(query);
-  if (!q.length) return [];
+  if (!q.length && !pinned.length) return [];
+  if (!q.length) return pinned.slice(0, topK);
   const scored = PAGES.map((page) => {
     const hay = `${page.source} ${page.title} ${page.text}`.toLowerCase();
     const pageTokens = tokens(page.text);
@@ -46,13 +51,16 @@ export function searchPages(query: string, topK = 3): AskCitation[] {
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
 
-  return scored.map(({ page, score }) => ({
+  const fresh = scored.map(({ page, score }) => ({
     source: page.source,
     page: page.page,
     title: page.title,
     excerpt: excerpt(page, q),
     score,
   }));
+  const seen = new Set(fresh.map((c) => `${c.source}:${c.page}`));
+  const keep = pinned.filter((c) => !seen.has(`${c.source}:${c.page}`));
+  return [...fresh, ...keep].slice(0, topK);
 }
 
 function excerpt(page: ProductPage, q: string[]) {
