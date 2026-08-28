@@ -11,27 +11,13 @@ Start Fortitudo Desk.bat
 | Surface | URL | Role |
 |---------|-----|------|
 | **Desk UI** | http://localhost:8080 | React app (Ask, Clients, Studio, Craft) |
-| **AI backend** | http://127.0.0.1:8000 | Python RAG: product guides, clients, mockups |
+| **AI backend** | http://127.0.0.1:8000 | Python RAG: product guides, clients |
 | **Ollama** | http://127.0.0.1:11434 | Local models |
 
 ## Modules
 
 1. **Advisor** — product questions with page citations, client vault, ROA drafts
 2. **Studio (Drama)** — adjudication companion
-3. **Craft** — local business craft / outreach
+3. **Craft** — local shop book, mock page, walk-in pack (`/craft`)
 
-## Day-to-day index
-
-```bat
-cd backend
-python ingest.py
-```
-
-Incremental only. Full rebuild: `python ingest.py --rebuild`
-
-## Related private repos (merge sources)
-
-- https://github.com/Beastslayer2600/lion-wolf-moss-shadow — desk UI
-- https://github.com/Beastslayer2600/Fortitudocraftstudio — Craft module
-
-Copy desk `src/` and Craft into this repo; see `MERGE_CRAFT.md` and `desk-patches/`.
+Craft is in this repo: `src/craft/CraftApp.tsx` plus `src/lib/craft.ts`.
