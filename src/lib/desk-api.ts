@@ -22,10 +22,10 @@ export const deskApi = {
       sources: { name: string; pages: number }[];
       how: string[];
     }>("/api/learn"),
-  ingestGuide: (filename: string, contentBase64: string) =>
-    json<{ ok: boolean; pages: number }>("/api/ingest/guides", {
+  ingestGuide: (filename: string, contentBase64: string, topic = "misc") =>
+    json<{ ok: boolean; pages: number; topic?: string; source?: string }>("/api/ingest/guides", {
       method: "POST",
-      body: JSON.stringify({ filename, content_base64: contentBase64 }),
+      body: JSON.stringify({ filename, content_base64: contentBase64, topic }),
     }),
   ingestClients: () =>
     json<{ ok: boolean; pages: number }>("/api/ingest/clients", {
