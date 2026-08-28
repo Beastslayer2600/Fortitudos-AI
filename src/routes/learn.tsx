@@ -1,25 +1,35 @@
 import { useEffect, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { deskApi, fileToBase64 } from "@/lib/desk-api";
+import { deskApi, fileToBase64, getApiBase, setApiBase } from "@/lib/desk-api";
+import { SightDrop } from "@/components/sight-drop";
 
 export const Route = createFileRoute("/learn")({ component: LearnPage });
 
 function LearnPage() {
   const [docs, setDocs] = useState<{ name: string; kind: string; bytes: number }[]>([]);
-  const [sources, setSources] = useState<{ name: string; pages: number }[]>([]);
-  const [how, setHow] = useState<string[]>([]);
-  const [status, setStatus] = useState("Connecting to local backend…");
+  const [status, setStatus] = useState("Connecting…");
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<"teach" | "files" | "discover">("teach");
+  const [pasteTitle, setPasteTitle] = useState("");
+  const [pasteText, setPasteText] = useState("");
+  const [alsoResearch, setAlsoResearch] = useState(true);
+  const [homeUrl, setHomeUrl] = useState("");
+  const [gaps, setGaps] = useState<{ title: string; branch: string; have: boolean }[]>([]);
 
   async function refresh() {
     try {
       const data = await deskApi.learn();
       setDocs(data.docs);
-      setSources(data.sources);
-      setHow(data.how);
-      setStatus("Desk backend is on this PC.");
+      setStatus("Desk backend reached.");
+      setHomeUrl(getApiBase());
+      try {
+        const disc = await deskApi.discover();
+        setGaps(disc.gaps);
+      } catch {
+        /* older */
+      }
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Backend not running. Use Start Fortitudo Desk.bat");
+      setStatus(err instanceof Error ? err.message : "Start the desk on the PC");
     }
   }
 
@@ -27,84 +37,55 @@ function LearnPage() {
     void refresh();
   }, []);
 
-  async function onGuides(files: FileList | null) {
-    if (!files?.length) return;
-    setBusy(true);
-    try {
-      for (const file of [...files]) {
-        const b64 = await fileToBase64(file);
-        const result = await deskApi.ingestGuide(file.name, b64);
-        setStatus(`${file.name}: ${result.pages} pages indexed`);
-      }
-      await refresh();
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Ingest failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function ingestClients() {
-    setBusy(true);
-    try {
-      const result = await deskApi.ingestClients();
-      setStatus(`Client files: ${result.pages} pages in the vault index`);
-      await refresh();
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Client ingest failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
-    <div className="mx-auto max-w-3xl px-5 py-8 md:px-10 md:py-12">
+    <div className="mx-auto max-w-3xl px-5 py-8">
       <p className="text-[11px] tracking-[0.22em] text-muted uppercase">One app</p>
-      <h1 className="mt-2 font-display text-3xl tracking-tight md:text-4xl">Learn & ingest</h1>
+      <h1 className="mt-2 font-display text-3xl">Learn</h1>
       <p className="mt-2 text-sm text-muted">{status}</p>
-      <ol className="mt-6 list-decimal space-y-2 pl-5 text-sm text-muted">
-        {how.map((line) => (
-          <li key={line}>{line}</li>
-        ))}
-      </ol>
-      <div className="mt-8 rounded-xl border border-dashed border-border bg-surface px-5 py-8 text-center">
-        <p className="text-sm">Product guides go into the index. Client files stay on the client.</p>
-        <label className="mt-3 inline-flex h-11 cursor-pointer items-center rounded-md bg-elevated px-4 text-sm">
-          {busy ? "Working…" : "Add guide PDF / MD"}
-          <input type="file" accept=".pdf,.md,.txt" multiple className="sr-only" disabled={busy} onChange={(e) => void onGuides(e.target.files)} />
-        </label>
-        <div className="mt-3">
-          <button type="button" className="h-11 rounded-md border border-border px-4 text-sm" disabled={busy} onClick={() => void ingestClients()}>
-            Re-index filed client documents
+      <form className="mt-4 flex gap-2" onSubmit={(e) => { e.preventDefault(); setApiBase(homeUrl); void refresh(); }}>
+        <input className="h-11 flex-1 rounded-md border border-border bg-transparent px-3 text-sm" placeholder="Home backend http://192.168.x.x:8000" value={homeUrl} onChange={(e) => setHomeUrl(e.target.value)} />
+        <button className="h-11 rounded-md border border-border px-4 text-sm" type="submit">Use this PC</button>
+      </form>
+      <div className="mt-6 flex gap-1">
+        {(["teach", "files", "discover"] as const).map((key) => (
+          <button key={key} type="button" className={`h-10 rounded-md px-4 text-sm ${tab === key ? "bg-elevated text-accent" : "border border-border"}`} onClick={() => setTab(key)}>
+            {key === "teach" ? "Tell it" : key === "files" ? "Files" : "Discover"}
           </button>
-        </div>
+        ))}
       </div>
-      <section className="mt-8">
-        <h2 className="font-display text-xl">On disk</h2>
-        <ul className="mt-3 divide-y divide-border rounded-xl bg-surface">
-          {docs.map((d) => (
-            <li key={d.name} className="flex justify-between px-4 py-3 text-sm">
-              <span>{d.name}</span>
-              <span className="text-subtle">{d.kind} · {Math.round(d.bytes / 1024)} KB</span>
-            </li>
-          ))}
-          {docs.length === 0 && <li className="px-4 py-3 text-sm text-muted">No guides in backend/docs yet.</li>}
-        </ul>
-      </section>
-      <section className="mt-8">
-        <h2 className="font-display text-xl">Indexed sources</h2>
-        <ul className="mt-3 divide-y divide-border rounded-xl bg-surface">
-          {sources.map((s) => (
-            <li key={s.name} className="flex justify-between px-4 py-3 text-sm">
-              <span>{s.name}</span>
-              <span className="text-subtle">{s.pages} pages</span>
-            </li>
+      {tab === "teach" && (
+        <>
+          <form className="mt-6 space-y-3 rounded-xl border border-border bg-surface p-5" onSubmit={(e) => { e.preventDefault(); void (async () => { setBusy(true); try { await deskApi.teach(pasteTitle || "Lesson", pasteText, alsoResearch); setPasteText(""); await refresh(); } catch (err) { setStatus(err instanceof Error ? err.message : "Teach failed"); } finally { setBusy(false); } })(); }}>
+            <p className="text-sm">Tell it what to learn. Filed for Advisor, Studio and Craft.</p>
+            <input className="h-11 w-full rounded-md border border-border bg-transparent px-3 text-sm" placeholder="Topic" value={pasteTitle} onChange={(e) => setPasteTitle(e.target.value)} />
+            <textarea className="min-h-32 w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm" placeholder="Rules, voice, examples — or leave blank and research." value={pasteText} onChange={(e) => setPasteText(e.target.value)} />
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={alsoResearch} onChange={(e) => setAlsoResearch(e.target.checked)} /> Research after filing</label>
+            <button type="submit" className="h-11 rounded-md bg-accent px-4 text-sm text-accent-fg" disabled={busy}>Learn this</button>
+          </form>
+          <div className="mt-6"><SightDrop /></div>
+        </>
+      )}
+      {tab === "discover" && (
+        <ul className="mt-6 divide-y divide-border rounded-xl bg-surface">
+          {gaps.map((g) => (
+            <li key={g.title} className="flex justify-between px-4 py-3 text-sm"><span>{g.title}</span><span className="text-subtle">{g.have ? "on file" : g.branch}</span></li>
           ))}
         </ul>
-        <p className="mt-4 text-sm text-muted">
-          After ingest, open <Link to="/ask">Ask the index</Link> or <Link to="/chat">Chat</Link> with the client selected.
-        </p>
-      </section>
+      )}
+      {tab === "files" && (
+        <>
+          <label className="mt-6 inline-flex h-11 cursor-pointer items-center rounded-md bg-elevated px-4 text-sm">
+            Add PDF / MD
+            <input type="file" accept=".pdf,.md,.txt" multiple className="sr-only" onChange={(e) => { const files = e.target.files; if (!files) return; void (async () => { for (const f of [...files]) { await deskApi.ingestGuide(f.name, await fileToBase64(f), "all"); } await refresh(); })(); }} />
+          </label>
+          <ul className="mt-4 divide-y divide-border rounded-xl bg-surface">
+            {docs.map((d) => (
+              <li key={d.name} className="px-4 py-3 text-sm">{d.name}</li>
+            ))}
+          </ul>
+          <p className="mt-4 text-sm"><Link to="/chat">Chat</Link></p>
+        </>
+      )}
     </div>
   );
 }
