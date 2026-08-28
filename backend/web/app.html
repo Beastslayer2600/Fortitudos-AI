@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en-ZA">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fortitudo AI Desk</title>
+  <meta name="color-scheme" content="dark">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">F</div>
+        <div class="brand-text">
+          <strong>Fortitudo AI</strong>
+          <small>Local adviser desk</small>
+        </div>
+      </div>
+      <button class="nav-btn active" data-view="ask" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg>
+        Ask
+      </button>
+      <button class="nav-btn" data-view="clients" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Clients
+      </button>
+      <button class="nav-btn" data-view="status" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
+        Status
+      </button>
+      <div class="sidebar-foot">
+        Fully offline · Ollama only
+        <div class="pill"><span class="dot" id="ollama-dot"></span> <span id="ollama-label">Checking…</span></div>
+      </div>
+    </aside>
+
+    <main>
+      <section id="view-ask" class="view active">
+        <div class="page-head">
+          <h1>Product questions</h1>
+          <p>Answers are grounded in your indexed technical guides, with page citations. Nothing leaves this machine.</p>
+        </div>
+        <div class="card ask-area">
+          <h2>Query</h2>
+          <textarea id="ask-q" placeholder="e.g. What percentage is paid for hearing loss in both ears of 90 decibels or more under Living Lifestyle Protector?"></textarea>
+          <div class="ask-toolbar">
+            <button id="ask-btn" type="button">Ask</button>
+            <button class="ghost" id="show-btn" type="button">Show sources only</button>
+            <span class="hint">Ctrl+Enter to submit · CPU models may take 30–60s</span>
+          </div>
+          <div id="ask-out"></div>
+        </div>
+      </section>
+
+      <section id="view-clients" class="view">
+        <div class="page-head">
+          <h1>Clients</h1>
+          <p>Local records under FortitudoData. Documents stay on this PC — never uploaded to a cloud service by this app.</p>
+        </div>
+        <div class="card">
+          <h2>New client</h2>
+          <form id="new-client" class="form-grid">
+            <div><label>Full name</label><input name="name" required placeholder="Client full name"></div>
+            <div><label>Email</label><input name="email" type="email" placeholder="optional"></div>
+            <div><label>Phone</label><input name="phone" placeholder="optional"></div>
+            <div class="span-2"><button type="submit">Create client</button></div>
+          </form>
+        </div>
+        <div class="card">
+          <h2>Client list</h2>
+          <ul class="list" id="client-list"></ul>
+        </div>
+        <div id="client-detail" class="card" style="display:none"></div>
+      </section>
+
+      <section id="view-status" class="view">
+        <div class="page-head">
+          <h1>Workspace status</h1>
+          <p>Local Ollama health, indexed product guides, and drop-zone filing status.</p>
+        </div>
+        <div class="stats" id="status-grid"></div>
+        <div class="card">
+          <h2>Indexed sources</h2>
+          <ul class="list" id="source-list"></ul>
+        </div>
+        <div class="card">
+          <h2>Drop zone</h2>
+          <p class="empty" id="drop-info" style="font-style:normal;padding:0"></p>
+          <p class="verify-note">Drop files into the DropZone folder. High-confidence matches are filed automatically; uncertain items go to ManualReview.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || r.statusText || 'Request failed');
+  return data;
+}
+
+$$('.nav-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $$('.nav-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    $$('.view').forEach(v => v.classList.remove('active'));
+    $('#view-' + btn.dataset.view).classList.add('active');
+    if (btn.dataset.view === 'clients') loadClients();
+    if (btn.dataset.view === 'status') loadStatus();
+  });
+});
+
+function renderAnswer(data) {
+  let html = `<div class="answer-block">${esc(data.answer)}</div>`;
+  if (data.sources?.length) {
+    html += '<ul class="sources">' + data.sources.map(s =>
+      `<li><span>${esc(s.source)} · p.${s.page}</span><span class="score">${s.score}</span></li>`
+    ).join('') + '</ul>';
+    html += '<p class="verify-note">Verify every figure on the cited page before quoting it to a client.</p>';
+  }
+  $('#ask-out').innerHTML = html;
+}
+
+async function doAsk(showOnly) {
+  const q = $('#ask-q').value.trim();
+  if (!q) return;
+  $('#ask-out').innerHTML = '<p class="empty" style="font-style:normal"><span class="spinner"></span>Working…</p>';
+  $('#ask-btn').disabled = true;
+  $('#show-btn').disabled = true;
+  try {
+    const data = await api('/api/ask', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: q, show_only: !!showOnly})
+    });
+    if (data.show_only) {
+      $('#ask-out').innerHTML = '<h3 style="margin:1rem 0 0.5rem;color:var(--text-dim);font-size:0.85rem">Retrieved pages</h3>' +
+        (data.pages || []).map(p =>
+          `<div class="record"><b>${esc(p.source)} · p.${p.page}</b><span class="tag">${p.score}</span><pre>${esc(p.snippet)}</pre></div>`
+        ).join('') || '<div class="empty">No pages retrieved.</div>';
+    } else {
+      renderAnswer(data);
+    }
+  } catch (e) {
+    $('#ask-out').innerHTML = `<div class="notice">${esc(e.message)}</div>`;
+  } finally {
+    $('#ask-btn').disabled = false;
+    $('#show-btn').disabled = false;
+  }
+}
+
+$('#ask-btn').addEventListener('click', () => doAsk(false));
+$('#show-btn').addEventListener('click', () => doAsk(true));
+$('#ask-q').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); doAsk(false); }
+});
+
+async function loadClients() {
+  const list = await api('/api/clients');
+  const ul = $('#client-list');
+  if (!list.length) { ul.innerHTML = '<li class="empty" style="cursor:default;border:0">No clients yet.</li>'; return; }
+  ul.innerHTML = list.map(c =>
+    `<li data-id="${esc(c.id)}"><span><b>${esc(c.name)}</b><br><span class="meta">${esc(c.status)} · ${c.document_count || 0} docs</span></span><span class="meta">${esc((c.updated_at||'').slice(0,10))}</span></li>`
+  ).join('');
+  ul.querySelectorAll('li[data-id]').forEach(li => li.addEventListener('click', () => openClient(li.dataset.id)));
+}
+
+$('#new-client').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try {
+    await api('/api/clients', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.fromEntries(f)) });
+    e.target.reset();
+    await loadClients();
+  } catch (err) { alert(err.message); }
+});
+
+async function openClient(id) {
+  const c = await api('/api/clients/' + id);
+  const box = $('#client-detail');
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div class="client-detail-head">
+      <div>
+        <h2>${esc(c.name)}</h2>
+        <p class="meta" style="margin:0.25rem 0 0">${esc(c.email || '—')} · ${esc(c.phone || '—')}</p>
+      </div>
+    </div>
+    <div class="tabs">
+      <button type="button" class="active" data-tab="records">Records</button>
+      <button type="button" data-tab="file">File</button>
+      <button type="button" data-tab="note">Note</button>
+      <button type="button" data-tab="draft">AI draft</button>
+      <button type="button" data-tab="prep">Meeting prep</button>
+      <button type="button" data-tab="proj">Projection</button>
+    </div>
+    <div id="profile-body"></div>`;
+  box.querySelectorAll('.tabs button').forEach(b => {
+    b.addEventListener('click', () => {
+      box.querySelectorAll('.tabs button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      renderProfileTab(b.dataset.tab, c);
+    });
+  });
+  renderProfileTab('records', c);
+}
+
+function renderProfileTab(tab, c) {
+  const b = $('#profile-body');
+  if (tab === 'records') {
+    b.innerHTML =
+      '<h3>Documents</h3>' + (c.documents.length ? c.documents.map(d =>
+        `<div class="record"><b>${esc(d.filename)}</b><span class="tag">${esc(d.doc_type)}</span><br><span class="meta">${esc(d.created_at)} · ${Math.round((d.size||0)/1024)} KB</span></div>`
+      ).join('') : '<div class="empty">No documents filed yet.</div>') +
+      '<h3>Notes</h3>' + (c.notes.length ? c.notes.map(n =>
+        `<div class="record"><b>${esc(n.title)}</b><span class="tag muted">${esc(n.note_type)}</span><br><span class="meta">${esc(n.created_at)}</span><pre>${esc(n.content)}</pre></div>`
+      ).join('') : '<div class="empty">No notes yet.</div>');
+    return;
+  }
+  if (tab === 'file') {
+    b.innerHTML = `<form id="file-form" class="stack">
+      <div><label>Document type</label>
+        <select name="doc_type"><option>FICA / Identity</option><option>RPQ</option><option>Signed FNA</option>
+        <option>Advice Report</option><option>Quote</option><option>ROA</option><option>Correspondence</option><option>Other</option></select></div>
+      <div><label>File</label><input name="file" type="file" required></div>
+      <button type="submit">File document locally</button>
+      <p class="verify-note">Saved under this client folder only.</p></form>`;
+    $('#file-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = new FormData(e.target), file = f.get('file');
+      if (!file?.name) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          await api('/api/clients/' + c.id + '/documents', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ filename: file.name, content_type: file.type, doc_type: f.get('doc_type'), content_base64: String(reader.result).split(',')[1] })
+          });
+          await openClient(c.id);
+        } catch (err) { alert(err.message); }
+      };
+      reader.readAsDataURL(file);
+    });
+    return;
+  }
+  if (tab === 'note') {
+    b.innerHTML = `<form id="note-form" class="form-grid">
+      <div><label>Type</label><select name="note_type"><option>FNA</option><option>Advice</option><option>Meeting prep</option><option>General</option></select></div>
+      <div><label>Title</label><input name="title" required placeholder="First meeting notes"></div>
+      <div class="span-2"><label>Content</label><textarea name="content" required rows="6"></textarea></div>
+      <div class="span-2"><button type="submit">Save note</button></div></form>`;
+    $('#note-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      try {
+        const f = new FormData(e.target);
+        await api('/api/clients/' + c.id + '/notes', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.fromEntries(f)) });
+        await openClient(c.id);
+      } catch (err) { alert(err.message); }
+    });
+    return;
+  }
+  if (tab === 'draft') {
+    b.innerHTML = `<form id="draft-form" class="stack">
+      <div><label>Draft type</label>
+        <select name="draft_type">
+          <option>Advice summary</option>
+          <option>ROA structure</option>
+          <option>Follow-up</option>
+          <option>Evidence Pack</option>
+          <option>Technical Post</option>
+          <option>Website mockup</option>
+        </select></div>
+      <div><label>Optional brief (for website mockup)</label>
+        <input name="brief" placeholder="e.g. Practice storefront for high-income professionals; emphasise offline AI and evidence packs"></div>
+      <button type="submit">Generate internal draft</button>
+      <div class="notice">Uses only filed client documents. Website mockups save as HTML you can open in a browser. Labelled INTERNAL — adviser review required.</div>
+      <div id="draft-out"></div></form>`;
+    $('#draft-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const out = $('#draft-out');
+      out.innerHTML = '<p class="empty" style="font-style:normal"><span class="spinner"></span>Drafting…</p>';
+      try {
+        const f = new FormData(e.target);
+        const data = await api('/api/clients/' + c.id + '/drafts', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ draft_type: f.get('draft_type'), brief: f.get('brief') || '' })
+        });
+        if (data.format === 'html') {
+          out.innerHTML = `<div class="notice">${esc(data.message || 'HTML mockup saved.')}</div>
+            <p class="verify-note">Open the saved website_mockup.html from the client folder in your browser for a full preview.</p>
+            <div id="mockup-frame-host" style="margin-top:.65rem"></div>`;
+          const host = document.getElementById('mockup-frame-host');
+          const blob = new Blob([data.draft], { type: 'text/html' });
+          const url = URL.createObjectURL(blob);
+          const iframe = document.createElement('iframe');
+          iframe.style.cssText = 'width:100%;height:520px;border:1px solid var(--border);border-radius:8px;background:#0a0c10';
+          iframe.sandbox = '';
+          iframe.src = url;
+          host.appendChild(iframe);
+        } else {
+          out.innerHTML = `<div class="answer-block">${esc(data.draft)}</div>`;
+        }
+      } catch (err) { out.innerHTML = `<div class="notice">${esc(err.message)}</div>`; }
+    });
+    return;
+  }
+  if (tab === 'prep') {
+    b.innerHTML = '<p class="empty" style="font-style:normal"><span class="spinner"></span>Loading…</p>';
+    api('/api/clients/' + c.id + '/meeting-prep', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' })
+      .then(data => {
+        b.innerHTML = `<h3>Agenda</h3><ul style="margin:0;padding-left:1.2rem;color:var(--text-dim)">${data.agenda.map(a => `<li>${esc(a)}</li>`).join('')}</ul>
+          <h3>Checks</h3>${data.checks.map(ch =>
+            `<div class="record"><b>${esc(ch.item)}</b> ${ch.complete ? '<span class="tag ok">on file</span>' : '<span class="tag warn">missing</span>'}
+            <br><span class="meta">${esc(ch.instruction)}</span></div>`
+          ).join('')}`;
+      })
+      .catch(err => { b.innerHTML = `<div class="notice">${esc(err.message)}</div>`; });
+    return;
+  }
+  if (tab === 'proj') {
+    b.innerHTML = `<form id="proj-form" class="form-grid">
+      <div><label>Years</label><input name="years" type="number" value="10" min="1" max="60"></div>
+      <div><label>Lump sum</label><input name="lump_sum" type="number" value="0" step="any"></div>
+      <div><label>Monthly contribution</label><input name="monthly_contribution" type="number" value="2000" step="any"></div>
+      <div><label>Gross growth % p.a.</label><input name="gross_growth" type="number" value="8" step="any"></div>
+      <div><label>Advice fee % p.a.</label><input name="advice_fee" type="number" value="0.75" step="any"></div>
+      <div><label>Fund name</label><input name="fund_name" placeholder="optional"></div>
+      <div class="span-2"><button type="submit">Run projection</button></div>
+      <div class="span-2" id="proj-out"></div></form>`;
+    $('#proj-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const body = Object.fromEntries(new FormData(e.target));
+      for (const k of ['years','lump_sum','monthly_contribution','gross_growth','advice_fee']) body[k] = Number(body[k]);
+      try {
+        const data = await api('/api/projection', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+        const s = data.summary;
+        let html = `<p style="margin:0.5rem 0"><b>Projected net:</b> ${s.projected_value.toLocaleString()} · contributions ${s.total_contributions.toLocaleString()} · fees ${s.estimated_fees.toLocaleString()}</p>`;
+        html += '<table class="proj"><thead><tr><th>Year</th><th>Contributions</th><th>Gross</th><th>Net</th><th>Fees</th></tr></thead><tbody>';
+        html += data.rows.map(r => `<tr><td>${r.year}</td><td>${r.contributions.toLocaleString()}</td><td>${r.gross_value.toLocaleString()}</td><td>${r.net_value.toLocaleString()}</td><td>${r.fees.toLocaleString()}</td></tr>`).join('');
+        html += '</tbody></table>';
+        $('#proj-out').innerHTML = html;
+      } catch (err) { $('#proj-out').innerHTML = `<div class="notice">${esc(err.message)}</div>`; }
+    });
+  }
+}
+
+async function loadStatus() {
+  try {
+    const s = await api('/api/status');
+    const okClass = s.ok ? 'ok' : 'err';
+    $('#status-grid').innerHTML = `
+      <div class="stat ${okClass}"><div class="lbl">Ollama</div><div class="val">${s.ok ? 'Ready' : 'Offline'}</div></div>
+      <div class="stat"><div class="lbl">Chat model</div><div class="val" style="font-size:0.9rem">${esc(s.chat_model)}</div></div>
+      <div class="stat"><div class="lbl">Embed model</div><div class="val" style="font-size:0.9rem">${esc(s.embed_model)}</div></div>
+      <div class="stat"><div class="lbl">Sort engine</div><div class="val" style="font-size:0.9rem">${esc(s.sort_status || '—')}</div></div>
+      <div class="stat"><div class="lbl">Sources</div><div class="val">${(s.sources||[]).length}</div></div>
+      <div class="stat"><div class="lbl">Client pages</div><div class="val">${s.clients_indexed || 0}</div></div>`;
+    $('#source-list').innerHTML = (s.sources||[]).map(x =>
+      `<li style="cursor:default"><span>${esc(x.name)}</span><span class="meta">${x.pages} pages</span></li>`
+    ).join('') || '<li class="empty" style="cursor:default;border:0">Nothing indexed — run python ingest.py</li>';
+    $('#drop-info').textContent = 'Watching: ' + (s.drop_zone || '—');
+    const dot = $('#ollama-dot'), lab = $('#ollama-label');
+    if (s.ok) { dot.className = 'dot on'; lab.textContent = 'Ollama ready'; }
+    else { dot.className = 'dot off'; lab.textContent = 'Ollama offline'; }
+  } catch (e) {
+    $('#status-grid').innerHTML = `<div class="stat err"><div class="lbl">Error</div><div class="val" style="font-size:0.85rem">${esc(e.message)}</div></div>`;
+  }
+}
+
+loadStatus();
+</script>
+</body>
+</html>

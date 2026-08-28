@@ -1,0 +1,374 @@
+"""
+Fortitudo AI — client website mockup generator
+
+Produces a self-contained, research-backed one-page HTML mockup for a client
+or for the practice storefront. Uses the local Ollama chat model plus a fixed
+HTML shell so layout quality does not depend on the model inventing CSS.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from config import ROOT
+from llm import chat
+
+TRAINING_PATH = ROOT / "docs" / "website_mockup_training.md"
+
+MOCKUP_SYSTEM = """You write website copy for professional-services one-page mockups.
+You output ONLY a single JSON object (no markdown fences, no commentary).
+
+Rules:
+- Never invent credentials, licence numbers, AUM, awards, testimonials, or statistics.
+- Use only facts from the brief. If a fact is missing, use a clear placeholder like [PHONE].
+- Headlines must state a specific outcome for a specific audience.
+- Tone: calm, precise, adult. South African English spelling.
+- Privacy: if the brief mentions offline / local AI / privacy-first, feature it as a trust signal.
+- JSON keys must be exactly those requested in the user message.
+"""
+
+JSON_SCHEMA_HINT = """
+Return JSON with these keys:
+{
+  "site_title": "string — browser title",
+  "brand_name": "string",
+  "tagline": "string — short supporting line under brand",
+  "phone": "string or [PHONE]",
+  "email": "string or [EMAIL]",
+  "hero_eyebrow": "string — short uppercase-style label",
+  "hero_headline": "string — outcome-focused H1",
+  "hero_sub": "string — 1-2 sentences",
+  "primary_cta": "string — button label",
+  "trust_items": ["string", "string", "string", "string"],
+  "audience_heading": "string",
+  "audiences": [{"title": "string", "body": "string"}, {"title": "string", "body": "string"}],
+  "problems_heading": "string",
+  "problems": [{"title": "string", "body": "string"}, {"title": "string", "body": "string"}, {"title": "string", "body": "string"}],
+  "process_heading": "string",
+  "steps": [{"title": "string", "body": "string"}, {"title": "string", "body": "string"}, {"title": "string", "body": "string"}],
+  "method_heading": "string",
+  "method_body": "string — 2-3 short paragraphs separated by \\n\\n",
+  "method_bullets": ["string", "string", "string"],
+  "faq": [{"q": "string", "a": "string"}, {"q": "string", "a": "string"}, {"q": "string", "a": "string"}, {"q": "string", "a": "string"}],
+  "final_heading": "string",
+  "final_body": "string",
+  "footer_legal": "string — one short compliance/privacy line"
+}
+"""
+
+
+def _training_excerpt() -> str:
+    if TRAINING_PATH.exists():
+        text = TRAINING_PATH.read_text(encoding="utf-8")
+        return text[:4500]
+    return "Use trust-first one-page structure: hero, trust strip, audience, problems, process, method, FAQ, CTA."
+
+
+def _extract_json(text: str) -> Dict[str, Any]:
+    import json
+    start, end = text.find("{"), text.rfind("}") + 1
+    if start < 0 or end <= start:
+        raise ValueError("Model did not return JSON for the website mockup.")
+    return json.loads(text[start:end])
+
+
+def _esc(s: Any) -> str:
+    return (
+        str(s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _paras(text: str) -> str:
+    chunks = [c.strip() for c in (text or "").split("\n\n") if c.strip()]
+    return "".join(f"<p>{_esc(c)}</p>" for c in chunks) or "<p></p>"
+
+
+def render_html(data: Dict[str, Any]) -> str:
+    """Deterministic high-quality shell — model only supplies copy."""
+    trust = "".join(
+        f"<div class='trust-item'><span class='tick'>✓</span><span>{_esc(t)}</span></div>"
+        for t in (data.get("trust_items") or [])[:4]
+    )
+    audiences = "".join(
+        f"<article class='card'><h3>{_esc(a.get('title'))}</h3><p>{_esc(a.get('body'))}</p></article>"
+        for a in (data.get("audiences") or [])[:3]
+    )
+    problems = "".join(
+        f"<article class='card'><h3>{_esc(p.get('title'))}</h3><p>{_esc(p.get('body'))}</p></article>"
+        for p in (data.get("problems") or [])[:4]
+    )
+    steps = "".join(
+        f"<li><span class='num'>{i:02d}</span><div><strong>{_esc(s.get('title'))}</strong>"
+        f"<p>{_esc(s.get('body'))}</p></div></li>"
+        for i, s in enumerate((data.get("steps") or [])[:5], 1)
+    )
+    bullets = "".join(f"<li>{_esc(b)}</li>" for b in (data.get("method_bullets") or [])[:5])
+    faq = "".join(
+        f"<details><summary>{_esc(f.get('q'))}</summary><p>{_esc(f.get('a'))}</p></details>"
+        for f in (data.get("faq") or [])[:6]
+    )
+    phone = _esc(data.get("phone") or "[PHONE]")
+    email = _esc(data.get("email") or "[EMAIL]")
+    cta = _esc(data.get("primary_cta") or "Book a conversation")
+    brand = _esc(data.get("brand_name") or "Practice")
+    title = _esc(data.get("site_title") or brand)
+
+    return f"""<!DOCTYPE html>
+<!-- INTERNAL MOCKUP — adviser review required; not live. Generated by Fortitudo AI. -->
+<html lang="en-ZA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+<style>
+:root {{
+  --bg:#0a0c10; --panel:#151b24; --panel2:#1c2430; --line:rgba(201,154,59,.18);
+  --text:#f2ebe0; --muted:#a89f8e; --gold:#c99a3b; --gold2:#f0d27a;
+  --radius:14px; --max:1080px;
+  --font:Inter,system-ui,-apple-system,Segoe UI,sans-serif;
+  --display:"Playfair Display",Georgia,serif;
+}}
+* {{ box-sizing:border-box; }}
+html {{ scroll-behavior:smooth; }}
+body {{
+  margin:0; font-family:var(--font); color:var(--text); line-height:1.6;
+  background:
+    radial-gradient(ellipse 70% 40% at 10% 0%, rgba(201,154,59,.12), transparent 55%),
+    radial-gradient(ellipse 50% 30% at 100% 0%, rgba(30,80,60,.1), transparent 50%),
+    var(--bg);
+  -webkit-font-smoothing:antialiased;
+}}
+a {{ color:inherit; text-decoration:none; }}
+.wrap {{ max-width:var(--max); margin:0 auto; padding:0 clamp(1rem,4vw,2rem); }}
+.site-header {{
+  position:sticky; top:0; z-index:10;
+  display:flex; align-items:center; gap:1rem; flex-wrap:wrap;
+  padding:.9rem clamp(1rem,4vw,2rem);
+  background:rgba(10,12,16,.9); border-bottom:1px solid var(--line);
+  backdrop-filter:blur(12px);
+}}
+.brand {{ font-weight:700; letter-spacing:.02em; }}
+.brand small {{ display:block; font-weight:500; color:var(--muted); font-size:.75rem; }}
+.header-contact {{ margin-left:auto; display:flex; gap:1rem; align-items:center; flex-wrap:wrap; font-size:.9rem; color:var(--muted); }}
+.header-contact a:hover {{ color:var(--gold2); }}
+.btn {{
+  display:inline-flex; align-items:center; justify-content:center;
+  padding:.7rem 1.15rem; border-radius:999px; font-weight:650; font-size:.92rem;
+  background:linear-gradient(180deg,var(--gold2),var(--gold)); color:#0a0c10; border:none;
+  box-shadow:0 10px 28px rgba(201,154,59,.28); cursor:pointer;
+}}
+.btn:hover {{ filter:brightness(1.05); }}
+.btn.ghost {{
+  background:transparent; color:var(--text); border:1px solid var(--line);
+  box-shadow:none;
+}}
+.hero {{ padding:clamp(2.5rem,6vw,4.5rem) 0 2.5rem; }}
+.eyebrow {{
+  display:inline-block; margin:0 0 .75rem; font-size:.72rem; font-weight:650;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--gold2);
+}}
+.hero h1 {{
+  margin:0 0 1rem; font-family:var(--display); font-weight:700;
+  font-size:clamp(1.9rem,4.5vw,3rem); line-height:1.15; letter-spacing:-.02em;
+  max-width:18ch;
+}}
+.hero .sub {{ color:var(--muted); font-size:1.05rem; max-width:48ch; margin:0 0 1.5rem; }}
+.hero-actions {{ display:flex; flex-wrap:wrap; gap:.65rem; }}
+.trust {{
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1px;
+  background:var(--line); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden;
+  margin:1.5rem 0 0;
+}}
+.trust-item {{
+  background:var(--panel); padding:1rem 1.1rem; display:flex; gap:.55rem; align-items:flex-start;
+  font-size:.9rem; color:var(--muted);
+}}
+.tick {{ color:var(--gold2); font-weight:700; }}
+section {{ padding:clamp(2.25rem,5vw,3.5rem) 0; }}
+section h2 {{
+  margin:0 0 1.25rem; font-family:var(--display); font-size:clamp(1.4rem,2.5vw,1.85rem);
+  letter-spacing:-.015em;
+}}
+.grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:1rem; }}
+.card {{
+  background:linear-gradient(165deg,var(--panel),#10151c); border:1px solid var(--line);
+  border-radius:var(--radius); padding:1.25rem 1.2rem;
+}}
+.card h3 {{ margin:0 0 .45rem; font-size:1.05rem; }}
+.card p {{ margin:0; color:var(--muted); font-size:.95rem; }}
+.process {{ list-style:none; padding:0; margin:0; display:grid; gap:.85rem; }}
+.process li {{
+  display:grid; grid-template-columns:auto 1fr; gap:1rem; align-items:start;
+  padding:1.1rem 1.2rem; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+}}
+.process .num {{ font-weight:700; color:var(--gold); font-size:1rem; }}
+.process p {{ margin:.25rem 0 0; color:var(--muted); font-size:.95rem; }}
+.method {{
+  display:grid; grid-template-columns:1.2fr .8fr; gap:1.5rem; align-items:start;
+}}
+.method p {{ color:var(--muted); }}
+.method ul {{ margin:.75rem 0 0; padding-left:1.1rem; color:var(--muted); }}
+.method li {{ margin:.35rem 0; }}
+details {{
+  background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  padding:.85rem 1rem; margin:.5rem 0;
+}}
+details summary {{ cursor:pointer; font-weight:600; }}
+details p {{ margin:.55rem 0 0; color:var(--muted); font-size:.95rem; }}
+.cta-band {{
+  margin:1rem 0 2rem; padding:clamp(1.5rem,4vw,2.25rem);
+  border-radius:calc(var(--radius) + 2px); border:1px solid var(--line);
+  background:
+    radial-gradient(ellipse at 15% 0%, rgba(201,154,59,.16), transparent 55%),
+    var(--panel);
+  display:flex; flex-wrap:wrap; gap:1.25rem; align-items:center; justify-content:space-between;
+}}
+.cta-band p {{ margin:.35rem 0 0; color:var(--muted); max-width:42ch; }}
+footer {{
+  border-top:1px solid var(--line); padding:1.5rem clamp(1rem,4vw,2rem) 2.5rem;
+  color:var(--muted); font-size:.82rem;
+}}
+.banner {{
+  background:#2a2418; color:#e8c48a; text-align:center; font-size:.78rem; padding:.45rem;
+  border-bottom:1px solid rgba(201,154,59,.3);
+}}
+@media (max-width:800px) {{
+  .method {{ grid-template-columns:1fr; }}
+  .header-contact .hide-sm {{ display:none; }}
+}}
+</style>
+</head>
+<body>
+<div class="banner">Internal mockup — for adviser review only · not a live website</div>
+<header class="site-header">
+  <div class="brand">{brand}<small>{_esc(data.get("tagline") or "")}</small></div>
+  <div class="header-contact">
+    <a class="hide-sm" href="tel:{phone}">{phone}</a>
+    <a class="hide-sm" href="mailto:{email}">{email}</a>
+    <a class="btn" href="#contact">{cta}</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero wrap">
+    <p class="eyebrow">{_esc(data.get("hero_eyebrow") or "Professional advice")}</p>
+    <h1>{_esc(data.get("hero_headline") or brand)}</h1>
+    <p class="sub">{_esc(data.get("hero_sub") or "")}</p>
+    <div class="hero-actions">
+      <a class="btn" href="#contact">{cta}</a>
+      <a class="btn ghost" href="#how">How we work</a>
+    </div>
+    <div class="trust">{trust}</div>
+  </section>
+
+  <section class="wrap">
+    <h2>{_esc(data.get("audience_heading") or "Who this is for")}</h2>
+    <div class="grid">{audiences}</div>
+  </section>
+
+  <section class="wrap">
+    <h2>{_esc(data.get("problems_heading") or "Problems we help with")}</h2>
+    <div class="grid">{problems}</div>
+  </section>
+
+  <section class="wrap" id="how">
+    <h2>{_esc(data.get("process_heading") or "How we work")}</h2>
+    <ol class="process">{steps}</ol>
+  </section>
+
+  <section class="wrap">
+    <h2>{_esc(data.get("method_heading") or "Our method")}</h2>
+    <div class="method">
+      <div>{_paras(data.get("method_body") or "")}</div>
+      <div class="card"><h3>What you can expect</h3><ul>{bullets}</ul></div>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <h2>Questions</h2>
+    {faq}
+  </section>
+
+  <section class="wrap" id="contact">
+    <div class="cta-band">
+      <div>
+        <h2 style="margin:0">{_esc(data.get("final_heading") or "Next step")}</h2>
+        <p>{_esc(data.get("final_body") or "")}</p>
+        <p style="margin-top:.75rem;font-size:.88rem">{phone} · {email}</p>
+      </div>
+      <a class="btn" href="mailto:{email}">{cta}</a>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <p>{_esc(data.get("footer_legal") or "Internal mockup only. Review all claims before publication.")}</p>
+  <p style="margin-top:.35rem">© mockup · {brand}</p>
+</footer>
+</body>
+</html>
+"""
+
+
+def generate_mockup(
+    brief: str,
+    client_context: str = "",
+    practice_defaults: Optional[Dict[str, str]] = None,
+) -> str:
+    """Generate a complete HTML mockup from a brief (+ optional client file text)."""
+    practice_defaults = practice_defaults or {}
+    user = f"""Training notes (follow these):
+{_training_excerpt()}
+
+Practice defaults (use when brief is silent):
+- brand: {practice_defaults.get("brand_name", "Fortitudo Wealth")}
+- phone: {practice_defaults.get("phone", "[PHONE]")}
+- email: {practice_defaults.get("email", "[EMAIL]")}
+
+Client / project brief:
+{brief.strip() or "(no brief — produce a high-quality Fortitudo Wealth practice storefront mockup emphasising privacy-first local AI and technical evidence)"}
+
+Optional extracts from client documents (do not invent beyond this):
+{(client_context or "")[:12000] or "(none)"}
+
+{JSON_SCHEMA_HINT}
+"""
+    raw = chat(MOCKUP_SYSTEM, user, temperature=0.25)
+    data = _extract_json(raw)
+    # Soft-fill defaults
+    data.setdefault("brand_name", practice_defaults.get("brand_name", "Fortitudo Wealth"))
+    data.setdefault("phone", practice_defaults.get("phone", "[PHONE]"))
+    data.setdefault("email", practice_defaults.get("email", "[EMAIL]"))
+    return render_html(data)
+
+
+def generate_from_client_documents(client_name: str, source_text: str, extra_brief: str = "") -> str:
+    brief = (
+        f"Create a professional one-page website mockup for client/practice context: {client_name}.\n"
+        f"{extra_brief}\n"
+        "Position as a serious South African professional-services page. "
+        "If the documents describe a financial advice relationship, frame the site as the adviser's "
+        "storefront of precision (privacy-first, evidence-based) unless the brief clearly asks for "
+        "a different business type."
+    )
+    return generate_mockup(brief, client_context=source_text)
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="Generate a client website mockup HTML file")
+    ap.add_argument("--brief", default="", help="Optional brief")
+    ap.add_argument("-o", "--output", default="website_mockup.html")
+    args = ap.parse_args()
+    html = generate_mockup(args.brief)
+    Path(args.output).write_text(html, encoding="utf-8")
+    print(f"Wrote {args.output} ({len(html)} bytes)")

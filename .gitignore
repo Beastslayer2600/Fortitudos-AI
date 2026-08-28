@@ -9,3 +9,5 @@ backend/data/
 .DS_Store
 dist/
 .output/
+
+backend/docs/*.pdf

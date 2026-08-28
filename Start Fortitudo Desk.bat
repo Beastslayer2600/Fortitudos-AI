@@ -4,7 +4,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 if not exist "package.json" (
-  echo This file must live in the Fortitudos-AI / desk folder.
+  echo This file must live in the lion-wolf-moss-shadow folder.
   pause
   exit /b 1
 )
@@ -44,6 +44,7 @@ set "OLLAMA_HOST=http://127.0.0.1:11434"
 if not defined OLLAMA_MODEL set OLLAMA_MODEL=llama3.2:3b
 if not defined FORTITUDO_LLM set FORTITUDO_LLM=auto
 
+REM --- Ollama (already running is fine) ---
 where ollama >nul 2>&1
 if not errorlevel 1 (
   curl -sf http://127.0.0.1:11434/api/tags >nul 2>&1
@@ -54,6 +55,7 @@ if not errorlevel 1 (
   )
 )
 
+REM --- Python FA backend (Ask / index / clients) on :8000 ---
 if exist "backend\app.py" (
   echo Starting Fortitudo AI backend on http://127.0.0.1:8000 ...
   start "Fortitudo Backend" /min cmd /c "cd /d ""%~dp0backend"" && %PYTHON% app.py --host 127.0.0.1 --port 8000"
@@ -64,9 +66,13 @@ echo.
 echo ============================================================
 echo  Fortitudo Desk  —  single workspace
 echo ============================================================
-echo  UI:        http://localhost:8080
-echo  Backend:   http://127.0.0.1:8000
-echo  Ollama:    %OLLAMA_HOST%  model %OLLAMA_MODEL%
+echo  UI (this app):     http://localhost:8080
+echo  AI backend:        http://127.0.0.1:8000
+echo  Ollama:            %OLLAMA_HOST%  model %OLLAMA_MODEL%
+echo.
+echo  Modules: Advisor Ask · Clients · Studio (Drama) · Craft
+echo  Press Ctrl+C in this window to stop the UI.
+echo  Backend runs in a separate minimized window.
 echo ============================================================
 echo.
 
