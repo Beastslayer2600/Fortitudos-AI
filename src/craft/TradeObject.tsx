@@ -23,7 +23,9 @@ export function TradeObject({
       >
         <span className="sr-only">{noun}</span>
       </div>
-      <p className="absolute bottom-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">{noun}</p>
+      <p className="absolute bottom-1 text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+        {noun}
+      </p>
     </div>
   );
 }
