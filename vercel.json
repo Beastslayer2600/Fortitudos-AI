@@ -1,0 +1,6 @@
+{
+  "framework": null,
+  "buildCommand": "node scripts/with-app-env.mjs vite build",
+  "outputDirectory": ".vercel/output",
+  "installCommand": "npm ci"
+}
