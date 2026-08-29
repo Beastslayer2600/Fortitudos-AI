@@ -24,14 +24,13 @@ from pathlib import Path
 import client_store
 from ingest import extract_any
 from llm import chat
-from config import CHAT_MODEL
+from config import CHAT_MODEL, DATA_ROOT
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("SortEngine")
 
-DROP_ZONE = Path(os.environ.get("FORTITUDO_DROP_ZONE",
-                                r"C:\FortitudoData\DropZone"))
+DROP_ZONE = Path(os.environ.get("FORTITUDO_DROP_ZONE") or DATA_ROOT / "DropZone")
 # Deliberately a sibling of the drop zone, not a child of it.
 REVIEW_ZONE = Path(os.environ.get("FORTITUDO_REVIEW_ZONE",
                                   str(DROP_ZONE.parent / "ManualReview")))

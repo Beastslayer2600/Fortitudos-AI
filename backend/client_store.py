@@ -9,11 +9,11 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from config import ROOT, DATA_DIR
+from config import ROOT, DATA_DIR, DATA_ROOT
 
 # Keep client data outside the OneDrive project by default. Override this with
 # FORTITUDO_CLIENT_DATA_DIR when the approved encrypted data location differs.
-CLIENT_DATA_DIR = Path(os.environ.get("FORTITUDO_CLIENT_DATA_DIR", r"C:\FortitudoData"))
+CLIENT_DATA_DIR = Path(os.environ.get("FORTITUDO_CLIENT_DATA_DIR") or DATA_ROOT)
 CLIENTS_DIR = CLIENT_DATA_DIR / "clients"
 CLIENT_DB = CLIENT_DATA_DIR / "clients.db"
 

@@ -9,5 +9,10 @@ backend/data/
 .DS_Store
 dist/
 .output/
+.vercel/
+.nitro/
+.pytest_cache/
 
 backend/docs/*.pdf
+# Sight drops photos here; GITHUB.md rules out committing identity shots.
+backend/docs/learn/shots/

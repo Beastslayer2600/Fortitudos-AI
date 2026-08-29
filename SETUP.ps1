@@ -1,10 +1,11 @@
-# SETUP.ps1 — Build Fortitudos-AI as the single repo from your existing clones
-# Run once on the PC after cloning Fortitudos-AI.
+# SETUP.ps1 — first run on a new PC.
+#
+# Clones or updates the repo, then installs Node and Python dependencies.
+# The desk, Craft and the backend all live in this repository now, so nothing
+# is copied in from other clones.
 
 $ErrorActionPreference = "Stop"
-$Root = "C:\Users\gertj\Fortitudos-AI"
-$Desk = "C:\Users\gertj\lion-wolf-moss-shadow"
-$Craft = "C:\Users\gertj\Fortitudocraftstudio"
+$Root = if ($env:FORTITUDO_ROOT) { $env:FORTITUDO_ROOT } else { "C:\Users\$env:USERNAME\Fortitudos-AI" }
 
 if (-not (Test-Path $Root)) {
   git clone https://github.com/Beastslayer2600/Fortitudos-AI.git $Root
@@ -12,43 +13,18 @@ if (-not (Test-Path $Root)) {
 Set-Location $Root
 git pull origin main
 
-# Bring full React desk from lion-wolf if present
-if (Test-Path $Desk) {
-  Write-Host "Merging desk UI from lion-wolf-moss-shadow..."
-  foreach ($name in @("src","public","scripts","server","package.json","package-lock.json","vite.config.ts","tsconfig.json","eslint.config.mjs","startup.sh")) {
-    $src = Join-Path $Desk $name
-    if (Test-Path $src) {
-      Copy-Item -Recurse -Force $src $Root
-      Write-Host "  + $name"
-    }
-  }
-} else {
-  Write-Host "Desk clone not found at $Desk — clone lion-wolf-moss-shadow first for full UI."
-}
+Write-Host "Installing Node dependencies..."
+npm install
 
-# Craft
-if (-not (Test-Path $Craft)) {
-  git clone https://github.com/Beastslayer2600/Fortitudocraftstudio.git $Craft
-}
-New-Item -ItemType Directory -Force -Path (Join-Path $Root "integrations\craft") | Out-Null
-Copy-Item -Recurse -Force (Join-Path $Craft "src") (Join-Path $Root "integrations\craft\src")
-Write-Host "  + integrations/craft/src"
-
-# Wire craft route if desk src exists
-$routes = Join-Path $Root "src\routes"
-if (Test-Path $routes) {
-  Copy-Item -Force (Join-Path $Root "desk-patches\craft.tsx") (Join-Path $routes "craft.tsx") -ErrorAction SilentlyContinue
-  New-Item -ItemType Directory -Force -Path (Join-Path $Root "src\craft") | Out-Null
-  if (Test-Path (Join-Path $Root "desk-patches\CraftApp.tsx")) {
-    Copy-Item -Force (Join-Path $Root "desk-patches\CraftApp.tsx") (Join-Path $Root "src\craft\CraftApp.tsx")
-  }
-}
-
-# Backend deps
 if (Test-Path (Join-Path $Root "backend\requirements.txt")) {
+  Write-Host "Installing Python dependencies..."
   pip install -r (Join-Path $Root "backend\requirements.txt")
 }
 
+Write-Host ""
+Write-Host "Models (once):"
+Write-Host "  ollama pull llama3.2:3b"
+Write-Host "  ollama pull bge-m3"
 Write-Host ""
 Write-Host "Done. Launch:"
 Write-Host "  cd $Root"

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Fortitudo AI - configuration
 Everything tunable lives here. Change values, re-run ingest.py if you touch
 CHUNK settings or EMBED_MODEL.
@@ -16,6 +16,15 @@ DOCS_DIR = ROOT / "docs"          # drop your PDFs here
 DATA_DIR = ROOT / "data"          # sqlite index lives here
 DB_PATH = DATA_DIR / "index.db"
 WEB_DIR = ROOT / "web"
+
+# Client vault, drop zone and drama records live outside the repo. The desk is
+# a Windows product, but "C:\FortitudoData" is a relative name everywhere else,
+# so running the backend on Linux or macOS would create that literal folder in
+# the working directory. FORTITUDO_DATA_ROOT overrides both.
+DATA_ROOT = Path(
+    os.environ.get("FORTITUDO_DATA_ROOT")
+    or (r"C:\FortitudoData" if os.name == "nt" else Path.home() / "FortitudoData")
+)
 
 # ---------------------------------------------------------------- ollama
 OLLAMA_HOST = os.environ.get("FORTITUDO_OLLAMA_HOST") or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
