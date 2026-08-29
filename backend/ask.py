@@ -7,7 +7,7 @@ import store
 from retrieval import search, build_context
 from llm import chat, health, has_model, OllamaError
 from config import CHAT_MODEL, EMBED_MODEL
-from versioning import parse_as_of, query_intent, span_check
+from versioning import in_force, parse_as_of, query_intent, span_check
 from reason import ANSWER_SHAPE, DOCTRINE, as_prompt_block, think
 from expert_route import classify, expert_system
 
@@ -41,10 +41,21 @@ def answer(conn, question, history=None, client_excerpt="", room="fa"):
     lookup = rewrite_query(question, history)
     results = search(conn, lookup) or search(conn, question)
     results = [(row, score) for row, score in results if _keep_source(room, row[1])]
+    as_of = parse_as_of(question)
+    try:
+        meta = store.page_meta(conn)
+        dated = []
+        for row, score in results:
+            ef, et, _dom = meta.get(row[0], ("", "", ""))
+            if in_force(ef, et, as_of):
+                dated.append((row, score))
+        if dated:
+            results = dated
+    except Exception:
+        pass
     if not results and not client_excerpt:
         return "Nothing indexed for this room yet. File a lesson or run ingest.", []
 
-    as_of = parse_as_of(question)
     intent = query_intent(question)
     context = build_context(results) if results else "(no pages retrieved)"
     prior = ""
