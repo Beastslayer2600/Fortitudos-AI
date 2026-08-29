@@ -24,6 +24,21 @@ Use Tailscale (or similar). Do not publish port 8000 on the public internet.
 Phone opens http://<tailscale-name>:8080 and points Home backend at :8000 on
 that node — again started with `--host 0.0.0.0` so the tunnel can reach it.
 
+## Where things are saved
+
+Nothing a client touches is written inside the repo.
+
+| What | Where | Committed |
+|---|---|---|
+| Client vault, drop zone, drama records | `FORTITUDO_DATA_ROOT` (Windows: `C:\FortitudoData`) | never |
+| Model-written drafts and client photos | that client's `99_AI_Drafts/` | never |
+| Product guides and lessons | `backend/docs/` | lessons yes, PDFs no |
+| Sight photos and their extracts | `backend/docs/learn/shots/`, `.../sight/` | never |
+| Search and consent databases | `backend/data/` | never |
+
+`99_AI_Drafts/` is the quarantine: `ingest_clients` skips it, so nothing the
+model wrote can come back as evidence in an answer or a later draft.
+
 ## Vercel
 UI only. Ask / ingest / vault still need the home PC with Ollama.
 

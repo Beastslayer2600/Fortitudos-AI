@@ -1,6 +1,6 @@
 """Quick retrieval self-check (no LLM required)."""
 import store
-from retrieval import search
+from retrieval import corpus_exclusions, search
 
 TESTS = [
     ("hearing loss both ears 90 decibels", ["hearing", "90", "100"]),
@@ -13,7 +13,7 @@ def main():
     print("Indexed sources:", store.sources(conn))
     for q, needles in TESTS:
         print(f"\nQ: {q}")
-        results = search(conn, q)
+        results = search(conn, q, exclude_prefixes=corpus_exclusions("fa"))
         if not results:
             print("  (no results)")
             continue

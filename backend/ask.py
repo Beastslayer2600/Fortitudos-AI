@@ -113,7 +113,8 @@ def main():
         print()
         return
     if args.show:
-        for row, score in search(conn, args.show):
+        for row, score in search(conn, args.show,
+                                 exclude_prefixes=corpus_exclusions(args.room)):
             print(f"\n=== {row[1]} p.{row[2]}  (score {score:.4f}) ===")
             print(row[3][:1500])
         print()

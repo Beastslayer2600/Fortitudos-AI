@@ -17,6 +17,7 @@ import client_store
 import expert_route
 import rooms
 import store
+import versioning
 import sort_engine
 from ingest import extract_any
 from retrieval import build_context, corpus_exclusions, search
@@ -438,7 +439,7 @@ class Handler(BaseHTTPRequestHandler):
                             client.get("name") or cid, source, extra_brief=brief,
                         )
                         filename = "website_mockup.html"
-                        path = client_store.add_generated_file(cid, filename, html, "Other")
+                        path = client_store.add_generated_file(cid, filename, html)
                         client_store.add_note(
                             cid, "AI draft", "Website mockup (internal)",
                             "Generated HTML mockup saved as website_mockup.html. Open the file in a browser for preview.",
@@ -459,11 +460,16 @@ class Handler(BaseHTTPRequestHandler):
                     }.get(draft_type, "Create an internal adviser working summary.")
                     prompt = f"Client documents:\n\n{source}\n\n---\nDraft type: {draft_type}\n{instructions}"
                     draft = chat(DRAFT_SYSTEM, prompt)
+                    # Drafting is roa work and was the one generated output with
+                    # no check on it: a figure the client file does not support
+                    # went straight into a Record of Advice, and the banner was
+                    # only ever an instruction in the prompt.
+                    draft, _flagged = versioning.span_check(draft, source)
+                    banner = rooms.get_room("roa").draft_banner
+                    if banner and not draft.lstrip().startswith(banner.strip()):
+                        draft = banner + draft
                     filename = f"{draft_type.lower().replace(' ', '_')}_draft.md"
-                    path = client_store.add_generated_file(
-                        cid, filename, draft,
-                        "Advice Report" if draft_type == "ROA structure" else "Other",
-                    )
+                    path = client_store.add_generated_file(cid, filename, draft)
                     client_store.add_note(cid, "AI draft", f"{draft_type} (internal draft)", draft)
                     return self.send_json({"draft": draft, "path": path})
                 if action == "meeting-prep":

@@ -280,5 +280,63 @@ class RouteEndpoint(unittest.TestCase):
         self.assertIn("does not answer from the product index", payload["answer"])
 
 
+
+class SaveFolders(unittest.TestCase):
+    """Where each write lands, and what the index is allowed to see."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._dir, self._db = client_store.CLIENTS_DIR, client_store.CLIENT_DB
+        client_store.CLIENTS_DIR = Path(self.tmp.name) / "clients"
+        client_store.CLIENT_DB = Path(self.tmp.name) / "clients.db"
+
+    def tearDown(self):
+        client_store.CLIENTS_DIR, client_store.CLIENT_DB = self._dir, self._db
+        self.tmp.cleanup()
+
+    def test_a_client_photo_is_filed_on_the_client_not_the_shared_shelf(self):
+        import sight
+        cid = client_store.create_client("Vault Client")
+        real = sight.describe_image
+        sight.describe_image = lambda *a, **k: "a photo of an id document"
+        try:
+            out = sight.ingest_sight("aGk=", "id.png", "id", intent="client", client_id=cid)
+        finally:
+            sight.describe_image = real
+        note = Path(out["note"])
+        self.assertTrue(str(note).startswith(str(client_store.CLIENTS_DIR)), note)
+        self.assertIn(client_store.AI_DRAFT_FOLDER, note.parts)
+        # Model-written, so it must not reach the search index.
+        self.assertEqual(out["pages"], 0)
+        types = {d["doc_type"] for d in client_store.get_client(cid)["documents"]}
+        self.assertEqual(types, {client_store.AI_DRAFT_TYPE})
+
+    def test_generated_files_never_land_in_an_evidence_folder(self):
+        cid = client_store.create_client("Folder Client")
+        path = Path(client_store.add_generated_file(cid, "roa_draft.md", "text"))
+        self.assertIn(client_store.AI_DRAFT_FOLDER, path.parts)
+        for evidence_folder in client_store.FOLDERS.values():
+            self.assertNotIn(evidence_folder, path.parts)
+
+
+class DraftsAreChecked(unittest.TestCase):
+    def test_an_unsupported_figure_is_stripped_from_a_draft(self):
+        import versioning
+        source = "Client file: the survival period is 14 days."
+        draft = "The waiting period is 6 months and the survival period is 14 days."
+        checked, flagged = versioning.span_check(draft, source)
+        self.assertEqual(flagged, ["6 months"])
+        body = checked.split("[SPAN-CHECK]")[0]
+        self.assertNotIn("6 months", body)          # gone from the draft itself
+        self.assertIn("[MISSING", body)
+        self.assertIn("14 days", body)              # supported figure survives
+        self.assertIn("6 months", checked)          # but is named in the footer
+
+    def test_the_roa_banner_is_enforced_not_merely_requested(self):
+        import rooms
+        banner = rooms.get_room("roa").draft_banner
+        self.assertIn("INTERNAL DRAFT", banner)
+
+
 if __name__ == "__main__":
     unittest.main()
