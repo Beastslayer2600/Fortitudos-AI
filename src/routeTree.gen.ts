@@ -12,7 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AskRouteImport } from './routes/ask'
 import { Route as ChatRouteImport } from './routes/chat'
+import { Route as CraftRouteImport } from './routes/craft'
 import { Route as DropzoneRouteImport } from './routes/dropzone'
+import { Route as LearnRouteImport } from './routes/learn'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as SocialRouteImport } from './routes/social'
 import { Route as AdjudicationIndexRouteImport } from './routes/adjudication/index'
@@ -35,9 +37,19 @@ const ChatRoute = ChatRouteImport.update({
   path: '/chat',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CraftRoute = CraftRouteImport.update({
+  id: '/craft',
+  path: '/craft',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DropzoneRoute = DropzoneRouteImport.update({
   id: '/dropzone',
   path: '/dropzone',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LearnRoute = LearnRouteImport.update({
+  id: '/learn',
+  path: '/learn',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LibraryRoute = LibraryRouteImport.update({
@@ -75,7 +87,9 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/ask': typeof AskRoute
   '/chat': typeof ChatRoute
+  '/craft': typeof CraftRoute
   '/dropzone': typeof DropzoneRoute
+  '/learn': typeof LearnRoute
   '/library': typeof LibraryRoute
   '/social': typeof SocialRoute
   '/adjudication/$sessionId': typeof AdjudicationSessionIdRoute
@@ -87,7 +101,9 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/ask': typeof AskRoute
   '/chat': typeof ChatRoute
+  '/craft': typeof CraftRoute
   '/dropzone': typeof DropzoneRoute
+  '/learn': typeof LearnRoute
   '/library': typeof LibraryRoute
   '/social': typeof SocialRoute
   '/adjudication/$sessionId': typeof AdjudicationSessionIdRoute
@@ -100,7 +116,9 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/ask': typeof AskRoute
   '/chat': typeof ChatRoute
+  '/craft': typeof CraftRoute
   '/dropzone': typeof DropzoneRoute
+  '/learn': typeof LearnRoute
   '/library': typeof LibraryRoute
   '/social': typeof SocialRoute
   '/adjudication/$sessionId': typeof AdjudicationSessionIdRoute
@@ -114,7 +132,9 @@ export interface FileRouteTypes {
     | '/'
     | '/ask'
     | '/chat'
+    | '/craft'
     | '/dropzone'
+    | '/learn'
     | '/library'
     | '/social'
     | '/adjudication/$sessionId'
@@ -126,7 +146,9 @@ export interface FileRouteTypes {
     | '/'
     | '/ask'
     | '/chat'
+    | '/craft'
     | '/dropzone'
+    | '/learn'
     | '/library'
     | '/social'
     | '/adjudication/$sessionId'
@@ -138,7 +160,9 @@ export interface FileRouteTypes {
     | '/'
     | '/ask'
     | '/chat'
+    | '/craft'
     | '/dropzone'
+    | '/learn'
     | '/library'
     | '/social'
     | '/adjudication/$sessionId'
@@ -151,7 +175,9 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AskRoute: typeof AskRoute
   ChatRoute: typeof ChatRoute
+  CraftRoute: typeof CraftRoute
   DropzoneRoute: typeof DropzoneRoute
+  LearnRoute: typeof LearnRoute
   LibraryRoute: typeof LibraryRoute
   SocialRoute: typeof SocialRoute
   AdjudicationSessionIdRoute: typeof AdjudicationSessionIdRoute
@@ -183,11 +209,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/craft': {
+      id: '/craft'
+      path: '/craft'
+      fullPath: '/craft'
+      preLoaderRoute: typeof CraftRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/dropzone': {
       id: '/dropzone'
       path: '/dropzone'
       fullPath: '/dropzone'
       preLoaderRoute: typeof DropzoneRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/learn': {
+      id: '/learn'
+      path: '/learn'
+      fullPath: '/learn'
+      preLoaderRoute: typeof LearnRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/library': {
@@ -239,7 +279,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AskRoute: AskRoute,
   ChatRoute: ChatRoute,
+  CraftRoute: CraftRoute,
   DropzoneRoute: DropzoneRoute,
+  LearnRoute: LearnRoute,
   LibraryRoute: LibraryRoute,
   SocialRoute: SocialRoute,
   AdjudicationSessionIdRoute: AdjudicationSessionIdRoute,
