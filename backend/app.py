@@ -431,11 +431,11 @@ class Handler(BaseHTTPRequestHandler):
                     # Website mockup: structured HTML via dedicated generator
                     if draft_type in ("Website mockup", "Client website mockup"):
                         brief = str(body.get("brief", "")).strip()
-                        # Router, not website_mockup direct: crossover.py refuses
-                        # to turn an FNA or RoA into page copy.
+                        # Client side of the desk: practice storefront only.
+                        # A trade shop is a Craft lead, not an advice client.
                         import mockup_router
 
-                        html = mockup_router.generate_from_client_documents(
+                        html = mockup_router.generate_for_client(
                             client.get("name") or cid, source, extra_brief=brief,
                         )
                         filename = "website_mockup.html"
@@ -542,6 +542,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True, "pages": count})
             if parts == ["api", "projection"]:
                 return self.send_json(projection(body))
+            if parts == ["api", "craft", "mock"]:
+                import mockup_router
+                name = str(body.get("name", "")).strip()
+                if not name:
+                    raise ValueError("Name the shop.")
+                return self.send_json({
+                    "ok": True,
+                    "page": mockup_router.generate_for_lead(
+                        name, str(body.get("brief", "")),
+                        str(body.get("city", "")).strip() or "Kempton Park",
+                    ),
+                })
             if parts == ["api", "route"]:
                 route = expert_route.classify(
                     str(body.get("question", "")), hinted_room=str(body.get("room", "")),

@@ -338,5 +338,54 @@ class DraftsAreChecked(unittest.TestCase):
         self.assertIn("INTERNAL DRAFT", banner)
 
 
+
+class LeadgenAndClientsStaySeparate(unittest.TestCase):
+    """Two businesses, one desk. A shop is not an advice client.
+
+    Craft leads are shop owners the studio sells pages to; FA clients are
+    advice clients in the vault under FAIS. Filing a lead as a client to reach
+    a feature would put a marketing prospect in the regulated store.
+    """
+
+    def test_a_client_record_cannot_produce_a_trade_page(self):
+        import mockup_router
+        with self.assertRaises(ValueError) as caught:
+            mockup_router.generate_for_client(
+                "Joe Plumbing", "Geyser repairs Kempton Park 011 975 1234")
+        self.assertIn("Craft ledger", str(caught.exception))
+
+    def test_a_client_record_cannot_produce_a_page_from_an_fna(self):
+        import mockup_router
+        with self.assertRaises(ValueError):
+            mockup_router.generate_for_client("Mrs Botha", "FNA and policy number 12345")
+
+    def test_a_lead_brief_cannot_carry_client_file_language(self):
+        import mockup_router
+        for brief in ["record of advice for the owner", "id number 8001015009087",
+                      "the client file says"]:
+            with self.assertRaises(ValueError, msg=brief):
+                mockup_router.generate_for_lead("Joe Plumbing", brief)
+
+    def test_a_lead_brief_still_produces_a_shop_page(self):
+        import mockup_router
+        page = mockup_router.generate_for_lead(
+            "Joe Plumbing", "Geyser repairs Kempton Park 011 975 1234")
+        self.assertIn("Joe Plumbing", page)
+        self.assertIn("INTERNAL MOCKUP", page)
+
+    def test_the_craft_door_never_touches_the_vault(self):
+        """/api/craft/mock takes a brief, so no client record can be involved."""
+        import inspect, mockup_router
+        params = inspect.signature(mockup_router.generate_for_lead).parameters
+        self.assertNotIn("client_id", params)
+        self.assertNotIn("cid", params)
+        source = inspect.getsource(mockup_router.generate_for_lead)
+        self.assertNotIn("client_store", source)
+
+    def test_the_unguarded_generator_is_gone(self):
+        import website_mockup
+        self.assertFalse(hasattr(website_mockup, "generate_from_client_documents"))
+
+
 if __name__ == "__main__":
     unittest.main()

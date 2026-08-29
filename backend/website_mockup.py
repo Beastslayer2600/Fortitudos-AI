@@ -351,18 +351,6 @@ Optional extracts from client documents (do not invent beyond this):
     return render_html(data)
 
 
-def generate_from_client_documents(client_name: str, source_text: str, extra_brief: str = "") -> str:
-    brief = (
-        f"Create a professional one-page website mockup for client/practice context: {client_name}.\n"
-        f"{extra_brief}\n"
-        "Position as a serious South African professional-services page. "
-        "If the documents describe a financial advice relationship, frame the site as the adviser's "
-        "storefront of precision (privacy-first, evidence-based) unless the brief clearly asks for "
-        "a different business type."
-    )
-    return generate_mockup(brief, client_context=source_text)
-
-
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="Generate a client website mockup HTML file")

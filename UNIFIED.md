@@ -22,6 +22,21 @@ Start Fortitudo Desk.bat
 
 Craft is in this repo: `src/craft/CraftApp.tsx` plus `src/lib/craft.ts`.
 
+## Two businesses, one desk
+
+Craft leads and FA clients never share a record.
+
+| | Craft lead | FA client |
+|---|---|---|
+| Who | a shop owner the studio sells a page to | an advice client under FAIS |
+| Lives in | browser ledger `fortitudo.craft.ledger.v1` | the vault at `FORTITUDO_DATA_ROOT` |
+| Page door | `POST /api/craft/mock` — takes a brief | `.../drafts` — practice storefront only |
+| Refused | a brief carrying client-file language | a brief that reads as a trade shop |
+
+A trade shop is a Craft lead, not an advice client, so a client record cannot
+produce a trade page — that would mean a plumber had been filed in the vault
+to reach a feature. Nothing on the Craft desk writes to the vault.
+
 ## Routing
 
 `backend/expert_route.py` classifies the job, `backend/rooms.py` says what that
