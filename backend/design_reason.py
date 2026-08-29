@@ -1,32 +1,35 @@
 """Design reasoning for Craft pages.
 
-The model decides audience, headline job, mood, and what to omit.
-It does not emit HTML or invent phone / hours / reviews.
+The model thinks like a local conversion designer.
+It emits a spec. The renderer paints HTML. Nothing invented.
 """
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass, field
-from typing import List, Optional
+from pathlib import Path
+from typing import List
 
-from trade_page import TradeFacts, _headline, facts_from_text, generate_trade_page, render_trade_html
+from trade_page import TradeFacts, _headline, facts_from_text, render_trade_html
 
-SYSTEM = """You are the design lead for Fortitudo Craft one-page local shop sites in Gauteng.
-Output ONLY one JSON object. No markdown fences. No commentary.
+DOCTRINE = Path(__file__).resolve().parent / "docs" / "craft_design_doctrine.md"
 
-Decide:
-- who the first screen is for (one person, one urgent job)
-- one headline that names the suburb and the job
-- a one-line lead
-- mood: industrial | warm | cool | lush
-- which facts to OMIT because they were not supplied (hours, reviews, prices)
-- up to 4 service lines from the brief only
-- one flyer line for a printed pamphlet
+SYSTEM = """You are Fortitudo Craft's design and marketing lead for one-page local shop sites in Gauteng.
+Output ONLY one JSON object. No markdown. No HTML. No hex codes. No fonts.
 
-Never invent a phone number, opening hours, awards, testimonials, or prices.
-If hours are missing, omit them. If phone is missing, say so in missing.
-South African English. Short sentences.
+Think in this order, then fill the JSON:
+1. Intent — emergency (call now) or appointment (hours + place).
+2. Audience — one person, one suburb, one job.
+3. First screen — what they must see before they scroll: suburb, job, Call.
+4. Headline — job + suburb. Never a slogan ("quality you can trust").
+5. Proof — only what the brief actually contains.
+6. Omit — anything not supplied: hours, reviews, prices, second location.
+7. Flyer line — same job as the headline, short enough for A6.
+
+CTA rule: primary is Call, secondary is WhatsApp. Do not invent a Book Now form.
+Mood: industrial | warm | cool | lush.
+South African English. Grade 6. Short sentences.
+Never invent phone, hours, awards, 24/7, testimonials, client counts, or prices.
 """
 
 
@@ -35,12 +38,24 @@ class DesignSpec:
     headline: str
     lead: str
     audience: str
+    job: str = ""
+    intent: str = "emergency"
+    first_screen: str = ""
+    why: str = ""
+    seo_title: str = ""
+    cta_primary: str = "Call"
     mood: str = "industrial"
     omit: List[str] = field(default_factory=list)
     services: List[str] = field(default_factory=list)
     flyer_line: str = ""
     missing: List[str] = field(default_factory=list)
     raw: str = ""
+
+
+def _doctrine() -> str:
+    if DOCTRINE.exists():
+        return DOCTRINE.read_text(encoding="utf-8")[:2200]
+    return ""
 
 
 def _extract_json(text: str) -> dict:
@@ -51,14 +66,23 @@ def _extract_json(text: str) -> dict:
 
 
 def fallback_spec(facts: TradeFacts) -> DesignSpec:
+    emergency = (facts.trade or "").lower() in {
+        "plumb", "electr", "geyser", "mechanic", "workshop", "auto", "locksmith",
+    }
+    h = _headline(facts)
     return DesignSpec(
-        headline=_headline(facts),
+        headline=h,
         lead="Call or WhatsApp. The number is on this page.",
         audience=f"Someone in {facts.city} who needs a {facts.trade or 'local trade'} now",
-        mood="industrial" if (facts.trade or "").lower() in {"plumb", "electr", "mechanic", "workshop", "auto"} else "warm",
+        job=facts.trade or "local trade",
+        intent="emergency" if emergency else "appointment",
+        first_screen="Suburb + job + Call in the first thumb-scroll",
+        why="Emergency trades sell the tap. Appointment trades sell place and hours.",
+        seo_title=f"{facts.name} · {facts.trade or 'shop'} · {facts.city}",
+        mood="industrial" if emergency else "warm",
         omit=facts.missing(),
         services=facts.services[:4] or ([facts.trade] if facts.trade else []),
-        flyer_line=f"A page for {facts.name}. Scan to open it.",
+        flyer_line=f"{h}. Scan to open the page.",
         missing=facts.missing(),
         raw="(fallback — model skipped)",
     )
@@ -66,32 +90,43 @@ def fallback_spec(facts: TradeFacts) -> DesignSpec:
 
 def reason(facts: TradeFacts) -> DesignSpec:
     user = (
-        f"Shop: {facts.name}\nCity: {facts.city}\nTrade: {facts.trade or '(unknown)'}\n"
-        f"Phone: {facts.phone or '(none)'}\nHours: {facts.hours or '(none)'}\n"
-        f"Address: {facts.address or '(none)'}\nNote: {facts.note or '(none)'}\n"
-        "JSON keys: headline, lead, audience, mood, omit, services, flyer_line, missing"
+        _doctrine()
+        + "\n\nFACTS (do not add to these):\n"
+        + f"Shop: {facts.name}\nCity: {facts.city}\nTrade: {facts.trade or '(unknown)'}\n"
+        + f"Phone: {facts.phone or '(none)'}\nHours: {facts.hours or '(none)'}\n"
+        + f"Address: {facts.address or '(none)'}\nNote: {facts.note or '(none)'}\n"
+        + "JSON keys: headline, lead, audience, job, intent, first_screen, why, seo_title, "
+        + "cta_primary, mood, omit, services, flyer_line, missing"
     )
     try:
         from llm import chat
         raw = chat(SYSTEM, user, temperature=0.2)
         data = _extract_json(raw)
     except Exception:
-        spec = fallback_spec(facts)
-        return spec
+        return fallback_spec(facts)
     spec = DesignSpec(
         headline=str(data.get("headline") or _headline(facts))[:120],
         lead=str(data.get("lead") or "Call or WhatsApp.")[:220],
         audience=str(data.get("audience") or "")[:160],
+        job=str(data.get("job") or facts.trade or "")[:80],
+        intent=str(data.get("intent") or "emergency").lower(),
+        first_screen=str(data.get("first_screen") or "")[:180],
+        why=str(data.get("why") or "")[:240],
+        seo_title=str(data.get("seo_title") or f"{facts.name} · {facts.city}")[:70],
+        cta_primary=str(data.get("cta_primary") or "Call")[:24],
         mood=str(data.get("mood") or "industrial").lower(),
         omit=[str(x) for x in (data.get("omit") or [])][:8],
         services=[str(x) for x in (data.get("services") or facts.services)][:4],
         flyer_line=str(data.get("flyer_line") or f"A page for {facts.name}.")[:140],
         missing=[str(x) for x in (data.get("missing") or facts.missing())][:8],
-        raw=raw[:2000],
+        raw=raw[:2500],
     )
     if spec.mood not in {"industrial", "warm", "cool", "lush"}:
         spec.mood = "industrial"
-    # Never let the model smuggle hours that were not on the facts.
+    if spec.intent not in {"emergency", "appointment"}:
+        spec.intent = "emergency"
+    if spec.cta_primary.lower() not in {"call", "whatsapp"}:
+        spec.cta_primary = "Call"
     if not facts.hours:
         if "HOURS" not in spec.omit:
             spec.omit.append("HOURS")
@@ -102,7 +137,6 @@ def reason(facts: TradeFacts) -> DesignSpec:
 
 
 def apply_spec(facts: TradeFacts, spec: DesignSpec) -> TradeFacts:
-    services = spec.services or facts.services
     return TradeFacts(
         name=facts.name,
         city=facts.city,
@@ -110,22 +144,20 @@ def apply_spec(facts: TradeFacts, spec: DesignSpec) -> TradeFacts:
         phone=facts.phone,
         hours="" if "HOURS" in spec.omit else facts.hours,
         address=facts.address,
-        services=services,
+        services=spec.services or facts.services,
         note=facts.note,
         photos=facts.photos,
     )
 
 
 def flyer_html(facts: TradeFacts, spec: DesignSpec, mock_url: str) -> str:
-    """A6 pamphlet. QR points at the hosted mock — not localhost."""
     from html import escape
     q = (
         "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data="
         + __import__("urllib.parse").quote(mock_url, safe="")
     )
-    warn = "" if mock_url.startswith("http") and "127.0.0.1" not in mock_url and "localhost" not in mock_url else (
-        "<p class='warn'>This QR is not public. Host the mock before you print.</p>"
-    )
+    public = mock_url.startswith("http") and "127.0.0.1" not in mock_url and "localhost" not in mock_url
+    warn = "" if public else "<p class='warn'>This QR is not public. Host the mock before you print.</p>"
     return f"""<!DOCTYPE html>
 <html lang="en-ZA"><head><meta charset="utf-8">
 <title>Flyer — {escape(facts.name)}</title>
@@ -137,7 +169,7 @@ h1 {{ font-size: 1.4rem; margin: 0 0 .4rem; }}
 .warn {{ color:#8a1f1f; font-size:.85rem; }}
 </style></head>
 <body>
-<p style="letter-spacing:.14em;text-transform:uppercase;font-size:.7rem">{escape(facts.city)}</p>
+<p style="letter-spacing:.14em;text-transform:uppercase;font-size:.7rem">{escape(facts.city)} · {escape(spec.intent)}</p>
 <h1>{escape(facts.name)}</h1>
 <p>{escape(spec.flyer_line)}</p>
 <img class="qr" alt="QR" src="{escape(q)}">
@@ -152,29 +184,27 @@ def design_and_render(name: str, source_text: str, city: str = "Kempton Park", m
     spec = reason(facts)
     painted = apply_spec(facts, spec)
     page = render_trade_html(painted, include_sku=False)
-    # Overlay the reasoned headline by simple replace of the fallback H1 if present.
     page = page.replace(
         f"<h1>{_esc_safe(_headline(facts))}</h1>",
         f"<h1>{_esc_safe(spec.headline)}</h1>",
         1,
     )
+    if spec.seo_title:
+        page = page.replace(
+            f"<title>{_esc_safe(facts.name)}",
+            f"<title>{_esc_safe(spec.seo_title)}",
+            1,
+        )
     flyer = flyer_html(facts, spec, mock_url or "https://fortitudostudios.site/m/preview")
     return {"spec": asdict(spec), "page": page, "flyer": flyer, "missing": spec.missing}
 
 
 def _esc_safe(s: str) -> str:
-    return (
-        str(s or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
+    return str(s or "").replace("&", "&").replace("<", "<").replace(">", ">").replace('"', """)
 
 
 if __name__ == "__main__":
     import argparse
-    from pathlib import Path
     ap = argparse.ArgumentParser(description="Reason a Craft page + flyer")
     ap.add_argument("--name", required=True)
     ap.add_argument("--city", default="Kempton Park")
