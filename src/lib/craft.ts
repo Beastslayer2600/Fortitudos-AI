@@ -1,4 +1,5 @@
 export type CraftTouch = "untouched" | "audited" | "composed" | "sent" | "called";
+export type CraftConsent = "unknown" | "asked" | "consented" | "refused" | "customer";
 
 export type CraftLead = {
   id: string;
@@ -14,6 +15,7 @@ export type CraftLead = {
   photos: string[];
   savedAt: string;
   source: "hand" | "yello" | "osm" | "import";
+  consent?: CraftConsent;
 };
 
 export const SKU = {
@@ -33,31 +35,12 @@ export const SKU = {
 export const TERRITORIES = ["Kempton Park", "Centurion", "Irene", "Edenvale", "Boksburg"];
 
 const NOUN: Record<string, string> = {
-  bakery: "loaf",
-  bread: "loaf",
-  salon: "chair",
-  hair: "chair",
-  nail: "chair",
-  workshop: "wheel",
-  auto: "wheel",
-  mechanic: "wheel",
-  plumber: "pipe",
-  electrical: "pipe",
-  geyser: "pipe",
-  butcher: "block",
-  meat: "block",
-  florist: "stems",
-  flower: "stems",
-  broker: "file",
-  attorney: "file",
-  lawyer: "file",
-  accountant: "file",
-  advisor: "file",
-  adviser: "file",
-  cafe: "cup",
-  coffee: "cup",
-  restaurant: "plate",
-  gym: "weight",
+  bakery: "loaf", bread: "loaf", salon: "chair", hair: "chair", nail: "chair",
+  workshop: "wheel", auto: "wheel", mechanic: "wheel", plumber: "pipe",
+  electrical: "pipe", geyser: "pipe", butcher: "block", meat: "block",
+  florist: "stems", flower: "stems", broker: "file", attorney: "file",
+  lawyer: "file", accountant: "file", advisor: "file", adviser: "file",
+  cafe: "cup", coffee: "cup", restaurant: "plate", gym: "weight",
 };
 
 export function nounFor(type: string, name = ""): string {
@@ -83,24 +66,50 @@ export function jobFolderHint(lead: CraftLead) {
   return `C:\\Local AI\\shops\\${slugify(lead.name)}\\`;
 }
 
+export function canPitchElectronically(lead: CraftLead): boolean {
+  return lead.consent === "consented" || lead.consent === "customer";
+}
+
+/** Printed page. Not electronic. Always allowed. */
+export function doorLetter(lead: CraftLead, mockUrl: string) {
+  return (
+    `For the owner of ${lead.name}\n\n` +
+    `I drafted a one-page website for you. Nothing invented — only what is ` +
+    `already on your door and your van.\n\n` +
+    `See it: ${mockUrl}\n\n` +
+    `R${SKU.price.toLocaleString("en-ZA")} once, R${SKU.deposit.toLocaleString("en-ZA")} to start. If it is not useful, throw this away.\n\n` +
+    `Gert Fourie · Fortitudo Studios · +27 77 386 6299`
+  );
+}
+
+export function consentAskText(lead: CraftLead) {
+  return (
+    `Hello, this is Gert Fourie at Fortitudo Studios. ` +
+    `May I send you a one-page website mock for ${lead.name} in ${lead.city}? ` +
+    `Reply YES and I will send it. Reply NO and I will not contact you again about this.`
+  );
+}
+
 export function mailtoLetter(lead: CraftLead, mockUrl: string) {
   const subject = encodeURIComponent(`${lead.name} — a page that answers the phone`);
-  const body = encodeURIComponent(
+  const pitch =
     `Hello ${lead.name.split(" ")[0]},\n\n` +
-      `I put together a one-page mock for ${lead.name} in ${lead.city.split(",")[0]}. ` +
-      `Call and WhatsApp sit at the top. No invented hours or reviews.\n\n` +
-      `Look: ${mockUrl}\n\n` +
-      `The job is R5,500 once — R2,750 to start. If the page is useful, WhatsApp me and we finish it with your photos.\n\n` +
-      `Gert\nFortitudo Studios\n+27 77 386 6299`,
-  );
+    `I put together a one-page mock for ${lead.name} in ${lead.city.split(",")[0]}. ` +
+    `Call and WhatsApp sit at the top. No invented hours or reviews.\n\n` +
+    `Look: ${mockUrl}\n\n` +
+    `The job is R5,500 once — R2,750 to start.\n\nGert\nFortitudo Studios\n+27 77 386 6299`;
+  const ask = consentAskText(lead);
+  const body = encodeURIComponent(canPitchElectronically(lead) ? pitch : ask);
   const to = lead.email ? encodeURIComponent(lead.email) : "";
   return `mailto:${to}?subject=${subject}&body=${body}`;
 }
 
-export function whatsappLink(phone: string, name: string, mockUrl: string) {
+export function whatsappLink(phone: string, name: string, mockUrl: string, consent: CraftConsent = "unknown") {
   const digits = phone.replace(/\D/g, "");
   const intl = digits.startsWith("0") ? `27${digits.slice(1)}` : digits;
-  const text = encodeURIComponent(`Hi ${name.split(" ")[0]}, I made a mock page for the shop. ${mockUrl}`);
+  const pitch = `Hi ${name.split(" ")[0]}, I made a mock page for the shop. ${mockUrl}`;
+  const ask = `Hi, Gert at Fortitudo Studios. May I send you a one-page website mock for ${name}? Reply YES or NO.`;
+  const text = encodeURIComponent(consent === "consented" || consent === "customer" ? pitch : ask);
   return intl.length >= 10 ? `https://wa.me/${intl}?text=${text}` : "";
 }
 
@@ -120,5 +129,6 @@ export function newHandLead(partial: Partial<CraftLead>): CraftLead {
     photos: [],
     savedAt: new Date().toISOString(),
     source: "hand",
+    consent: partial.consent ?? "unknown",
   };
 }
