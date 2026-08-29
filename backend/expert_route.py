@@ -12,7 +12,7 @@ from typing import List
 from reason import DOCTRINE
 
 ROOM_HINTS = [
-    ("roa", re.compile(r"\b(record of advice|roa draft|suitability draft)\b", re.I)),
+    ("roa", re.compile(r"\b(roa draft|suitability draft|draft (a |the )?record of advice)\b", re.I)),
     ("drama", re.compile(r"\b(eisteddfod|adjudicat|rubric|drama syllabus|monologue)\b", re.I)),
     ("craft", re.compile(r"\b(website|mockup|shop page|flyer|qr|storefront|plumber|salon|craft)\b", re.I)),
     ("voice", re.compile(r"\b(instagram|caption|carousel|voice note|shame|money psycholog)\b", re.I)),
@@ -74,7 +74,7 @@ def classify(text: str, hinted_room: str = "") -> Route:
                 from crossover import refuse_reason
                 extra = refuse_reason(blob)
                 if extra:
-                    return Route("fa", why, extra, STANDARD["fa"], TOOLS["fa"])
+                    return Route("fa", why + "; client file", extra, STANDARD["fa"], TOOLS["fa"])
             except Exception:
                 pass
     return Route(room, why, REFUSE[room], STANDARD[room], TOOLS[room])
