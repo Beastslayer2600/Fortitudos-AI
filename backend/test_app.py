@@ -180,5 +180,40 @@ class AdvisorNeverSelfLearns(unittest.TestCase):
             app.client_source_text(client)
 
 
+
+class VaultBoundary(unittest.TestCase):
+    def test_a_document_outside_the_vault_is_not_served(self):
+        """The stored path decides what is read, so it must stay in the vault."""
+        outside = Path(tempfile.gettempdir()) / "fortitudo-outside.txt"
+        outside.write_text("not a client file", encoding="utf-8")
+        real = client_store.get_document
+        client_store.get_document = lambda _id: {
+            "relative_path": str(outside), "content_type": "text/plain",
+        }
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, _, payload = request(server, "/api/documents/whatever")
+            finally:
+                server.shutdown()
+                server.server_close()
+        finally:
+            client_store.get_document = real
+            outside.unlink(missing_ok=True)
+        self.assertEqual(status, 404)
+        self.assertNotIn("not a client file", json.dumps(payload))
+
+    def test_a_negative_content_length_is_refused(self):
+        class FakeHeaders(dict):
+            def get(self, key, default=None):
+                return super().get(key, default)
+
+        handler = type("H", (), {"headers": FakeHeaders({"Content-Length": "-1"}), "rfile": None})()
+        with self.assertRaises(ValueError):
+            app.json_body(handler)
+
+
 if __name__ == "__main__":
     unittest.main()

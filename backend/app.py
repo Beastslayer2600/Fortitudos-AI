@@ -225,7 +225,8 @@ def branch_shelves():
 
 def json_body(handler):
     length = int(handler.headers.get("Content-Length", "0"))
-    if length > MAX_BODY:
+    # A negative length would make rfile.read() block until the peer hangs up.
+    if length < 0 or length > MAX_BODY:
         raise ValueError("Request is too large.")
     return json.loads(handler.rfile.read(length) or b"{}")
 
@@ -355,6 +356,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not doc:
                     return self.send_json({"error": "Document not found."}, 404)
                 path = Path(doc["relative_path"])
+                # The stored path decides what gets read, so confirm it is still
+                # inside the client vault before serving it.
+                try:
+                    path.resolve().relative_to(client_store.CLIENTS_DIR.resolve())
+                except ValueError:
+                    return self.send_json({"error": "Document not found."}, 404)
                 if not path.exists():
                     return self.send_json({"error": "File missing on disk."}, 404)
                 ctype = doc.get("content_type") or "application/octet-stream"
