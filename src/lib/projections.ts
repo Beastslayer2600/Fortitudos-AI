@@ -17,16 +17,20 @@ export function project(inputs: ProjectionInputs): ProjectionSummary {
       ? inputs.unitsHeld * inputs.unitPrice
       : 0;
   const openingValue = Math.max(inputs.currentValue, unitsValue) + inputs.lumpSum;
-  const gross = inputs.growthRate / 100;
+  // A -100% or worse growth rate would make the fractional powers below NaN.
+  const gross = Math.max(-0.99, inputs.growthRate / 100);
   const fee = Math.max(0, inputs.adviceFee) / 100;
-  const net = gross - fee;
+  // The fee is levied on assets, so it divides the growth factor. Subtracting
+  // it from the rate understates the drag and disagrees with backend/app.py.
+  const netFactor = (1 + gross) / (1 + fee);
+  const net = netFactor - 1;
   const years = Math.max(0, inputs.years);
   const monthly = Math.max(0, inputs.monthlyContribution);
 
-  const monthlyRate = Math.pow(1 + net, 1 / 12) - 1;
+  const monthlyRate = Math.pow(netFactor, 1 / 12) - 1;
   const months = Math.round(years * 12);
 
-  const grownOpening = openingValue * Math.pow(1 + net, years);
+  const grownOpening = openingValue * Math.pow(netFactor, years);
   let annuity = 0;
   if (months > 0 && monthly > 0) {
     if (Math.abs(monthlyRate) < 1e-9) {
