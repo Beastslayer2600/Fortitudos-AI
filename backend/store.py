@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from config import DB_PATH, DATA_DIR
-from versioning import sha256_text
+from versioning import guess_meta_from_name, sha256_text
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pages (
@@ -105,6 +105,7 @@ def add_page(
     effective_to: str = "",
     domain: str = "",
 ):
+    guessed = guess_meta_from_name(source)
     vec = np.asarray(embedding, dtype=np.float32)
     conn.execute(
         "INSERT OR REPLACE INTO pages "
@@ -116,8 +117,8 @@ def add_page(
             text,
             vec.tobytes(),
             sha256_text(text),
-            effective_from or "",
-            effective_to or "",
+            effective_from or guessed.get("effective_from") or "",
+            effective_to or guessed.get("effective_to") or "",
             domain or _domain_of(source),
         ),
     )
