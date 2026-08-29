@@ -1,19 +1,32 @@
-"""Deterministic one-page for a trade shop. No wealth defaults. No invented hours."""
+"""Expert local-trade one-pager — conversion on a shop phone, not Awwwards."""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import List
+from urllib.parse import quote_plus
 
 PRICE = 5500
 DEPOSIT = 2750
-
 TRADE_HINT = re.compile(
     r"\b(plumb|electr|geyser|builder|carpenter|welder|panel.?beat|mechanic|"
     r"auto|workshop|tiler|roofer|painter|locksmith|aircon|hvac|gardener|"
     r"landscap|bakery|butcher|salon|hair|cafe|gym)\b",
     re.I,
 )
+HEADLINE = {
+    "plumb": "Burst pipe or cold geyser — call us in {city}",
+    "electr": "Power off? Call an electrician in {city}",
+    "geyser": "Geyser down — call {name}",
+    "mechanic": "The workshop in {city} that answers the phone",
+    "auto": "The workshop in {city} that answers the phone",
+    "workshop": "The workshop in {city} that answers the phone",
+    "salon": "{name} — {city}",
+    "hair": "{name} — {city}",
+    "cafe": "{name} in {city}",
+    "bakery": "{name} in {city}",
+}
 
 
 @dataclass
@@ -26,6 +39,7 @@ class TradeFacts:
     address: str = ""
     services: List[str] = field(default_factory=list)
     note: str = ""
+    photos: List[str] = field(default_factory=list)
 
     def missing(self) -> List[str]:
         gaps = []
@@ -52,7 +66,7 @@ def facts_from_text(name: str, blob: str, city: str = "Kempton Park") -> TradeFa
     if hm:
         hours = hm.group(0)
     trade = ""
-    tm = TRADE_HINT.search(blob or "")
+    tm = TRADE_HINT.search(f"{name} {blob}")
     if tm:
         trade = tm.group(1)
     return TradeFacts(name=name.strip() or "Shop", city=city, trade=trade, phone=phone, hours=hours, note=(blob or "")[:400])
@@ -62,47 +76,101 @@ def _esc(s: object) -> str:
     return str(s or "").replace("&", "&").replace("<", "<").replace(">", ">").replace('"', """)
 
 
-def render_trade_html(facts: TradeFacts, *, include_sku: bool = False) -> str:
+def _headline(facts: TradeFacts) -> str:
+    key = (facts.trade or "").lower()
+    for k, tmpl in HEADLINE.items():
+        if k in key:
+            return tmpl.format(city=facts.city.split(",")[0], name=facts.name)
+    return f"{facts.name} in {facts.city.split(',')[0]}"
+
+
+def _wa(phone: str) -> str:
+    tel = re.sub(r"\D", "", phone or "")
+    if tel.startswith("0") and len(tel) == 10:
+        return "27" + tel[1:]
+    return tel
+
+
+def _schema(facts: TradeFacts) -> str:
+    payload = {
+        "@context": "https://schema.org",
+        "@type": "LocalBusiness",
+        "name": facts.name,
+        "address": {"@type": "PostalAddress", "addressLocality": facts.city, "addressCountry": "ZA"},
+    }
+    if facts.phone:
+        payload["telephone"] = facts.phone
+    if facts.address:
+        payload["address"]["streetAddress"] = facts.address
+    if facts.hours:
+        payload["openingHours"] = facts.hours
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def render_trade_html(facts: TradeFacts, *, include_sku: bool = False, live: bool = False) -> str:
     phone = facts.phone or "[PHONE]"
     hours = facts.hours or "[HOURS]"
     trade = facts.trade or "local trade"
-    tel = re.sub(r"\D", "", facts.phone)
-    wa = f"27{tel[1:]}" if tel.startswith("0") and len(tel) == 10 else tel
+    wa = _wa(facts.phone)
     gaps = facts.missing()
-    gap_banner = (
-        f"Missing on the door: {', '.join(gaps)}. Do not invent them."
-        if gaps else "Facts only — review before print."
+    headline = _headline(facts)
+    maps = (
+        f"https://maps.google.com/?q={quote_plus(facts.address + ' ' + facts.city + ' South Africa')}"
+        if facts.address else ""
     )
-    sku = (
-        f"<p class='sku'>A page like this from Fortitudo Studios: R{PRICE:,} once, R{DEPOSIT:,} to start.</p>"
-        if include_sku else ""
-    )
-    services = "".join(f"<li>{_esc(s)}</li>" for s in (facts.services or [trade])[:6])
-    addr = f"<li>Address: {_esc(facts.address)}</li>" if facts.address else ""
-    return (
-        "<!DOCTYPE html>\n"
-        "<!-- INTERNAL MOCKUP — trade page — review before print. Not live. -->\n"
-        "<html lang=\"en-ZA\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<meta name=\"robots\" content=\"noindex,nofollow\">"
-        f"<title>{_esc(facts.name)} · {_esc(facts.city)}</title>"
-        "<style>body{margin:0;font-family:system-ui,sans-serif;background:#121212;color:#ece8e0}"
-        "a{color:inherit}.banner{background:#2a2418;color:#e8c48a;text-align:center;font-size:.78rem;padding:.5rem}"
-        "header{padding:1.25rem}.city{letter-spacing:.18em;text-transform:uppercase;font-size:.7rem;opacity:.65}"
-        "h1{margin:.35rem 0;font-size:2rem}.bar{display:flex;gap:.6rem;flex-wrap:wrap;padding:0 1.25rem 1.25rem}"
-        ".btn{display:inline-block;padding:.7rem 1.1rem;border-radius:999px;background:#d0ccc4;color:#121212;font-weight:650;text-decoration:none}"
-        ".btn.ghost{background:transparent;color:#ece8e0;border:1px solid #3a3a3a}section{padding:1rem 1.25rem}"
-        "footer{padding:1.25rem;opacity:.7;font-size:.8rem;border-top:1px solid #2a2a2a}</style></head><body>"
-        f"<div class=\"banner\">{_esc(gap_banner)}</div>"
-        f"<header><p class=\"city\">{_esc(facts.city)}</p><h1>{_esc(facts.name)}</h1>"
-        f"<p>{_esc(trade)} · Call or WhatsApp. Nothing invented.</p></header>"
-        f"<div class=\"bar\"><a class=\"btn\" href=\"tel:{_esc(phone)}\">Call {_esc(phone)}</a>"
-        f"<a class=\"btn ghost\" href=\"https://wa.me/{_esc(wa)}\">WhatsApp</a></div>"
-        f"<section><h2>On the door</h2><ul><li>Hours: {_esc(hours)}</li><li>Phone: {_esc(phone)}</li>{addr}</ul>"
-        f"<h2>Work</h2><ul>{services}</ul></section>"
-        f"<footer><p>Internal mockup. Print and walk it to the door. Do not email this as a pitch unless consent is on file.</p>{sku}</footer>"
-        "</body></html>"
-    )
+    robots = "index,follow" if live else "noindex,nofollow"
+    miss = (" — missing: " + ", ".join(gaps)) if gaps else ""
+    banner = "" if live else f"<div class='banner'>Internal mockup{miss} · print · not live</div>"
+    sku = f"<p>Fortitudo Studios: R{PRICE:,} once, R{DEPOSIT:,} to start.</p>" if include_sku and not live else ""
+    services = "".join(f"<li>{_esc(s)}</li>" for s in (facts.services[:6] or [trade]))
+    photos = "".join(f"<img src='{_esc(p)}' alt='{_esc(facts.name)}'>" for p in facts.photos[:3])
+    shots = f"<div class='shots'>{photos}</div>" if photos else ""
+    maps_html = f"<a href='{maps}'>Open in Maps</a>" if maps else ""
+    tel_digits = re.sub(r"\D", "", facts.phone or "")
+    tel = f"tel:{tel_digits}" if tel_digits else "#phone"
+    addr_block = f"<div><strong>Address</strong> {_esc(facts.address)} {maps_html}</div>" if facts.address else ""
+    return f"""<!DOCTYPE html>
+<html lang="en-ZA">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="{robots}"><meta name="theme-color" content="#111111">
+<title>{_esc(facts.name)} · {_esc(trade)} · {_esc(facts.city)}</title>
+<meta name="description" content="{_esc(headline)}. Call {_esc(phone)}.">
+<script type="application/ld+json">{_schema(facts)}</script>
+<style>
+:root{{--bg:#111;--ink:#f4efe6;--mute:#b7b0a4;--line:#2a2a2a;--btn:#f0ece3;--btnink:#111}}
+*{{box-sizing:border-box}}html,body{{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,sans-serif}}
+.banner{{background:#3a2e18;color:#f0d27a;text-align:center;font-size:.78rem;padding:.55rem}}
+.wrap{{max-width:640px;margin:0 auto;padding:1.25rem 1.15rem 6.5rem}}
+.kicker{{letter-spacing:.16em;text-transform:uppercase;font-size:.68rem;color:var(--mute)}}
+h1{{font-size:clamp(1.7rem,6vw,2.35rem);line-height:1.15;letter-spacing:-.03em;margin:.2rem 0 .75rem}}
+.lead{{color:var(--mute);margin:0 0 1.2rem}}
+.actions,.dock{{display:flex;gap:.55rem}}
+.btn{{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:.75rem 1.1rem;border-radius:999px;background:var(--btn);color:var(--btnink);font-weight:700;text-decoration:none}}
+.btn.ghost{{background:transparent;color:var(--ink);border:1px solid var(--line)}}
+.nap{{padding:1rem 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:var(--mute)}}
+.shots img{{width:100%;height:auto;border-radius:10px;margin:.4rem 0}}
+h2{{font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;color:var(--mute)}}
+.dock{{position:fixed;left:0;right:0;bottom:0;padding:.65rem .75rem calc(.65rem + env(safe-area-inset-bottom));background:rgba(17,17,17,.94);border-top:1px solid var(--line)}}
+.dock a{{flex:1}}
+@media print{{.banner,.dock{{display:none}}body{{background:#fff;color:#111}}}}
+</style></head>
+<body>
+{banner}
+<main class="wrap">
+<p class="kicker">{_esc(facts.city)} · {_esc(trade)}</p>
+<h1>{_esc(headline)}</h1>
+<p class="lead">Call or WhatsApp. The number is on this page.</p>
+<div class="actions"><a class="btn" href="{tel}">Call {_esc(phone)}</a><a class="btn ghost" href="https://wa.me/{_esc(wa)}">WhatsApp</a></div>
+{shots}
+<div class="nap"><div><strong>Phone</strong> {_esc(phone)}</div><div><strong>Hours</strong> {_esc(hours)}</div>
+{addr_block}</div>
+<h2>Work</h2><ul>{services}</ul>
+<footer style="margin-top:2rem;color:#b7b0a4;font-size:.8rem"><p>{_esc(facts.name)} · {_esc(facts.city)}</p>{sku}</footer>
+</main>
+<div class="dock"><a class="btn" href="{tel}">Call</a><a class="btn ghost" href="https://wa.me/{_esc(wa)}">WhatsApp</a></div>
+</body></html>
+"""
 
 
 def generate_trade_page(name: str, source_text: str, city: str = "Kempton Park") -> str:
