@@ -1,4 +1,4 @@
-"""Fortitudo AI - ask. Grounded answer in the Advisor doctrine shape."""
+"""Fortitudo AI - ask. Grounded answer in the room doctrine shape."""
 import argparse
 import os
 import sys
@@ -6,9 +6,10 @@ import sys
 import store
 from retrieval import search, build_context
 from llm import chat, health, has_model, OllamaError
-from config import SYSTEM_PROMPT, CHAT_MODEL, EMBED_MODEL
+from config import CHAT_MODEL, EMBED_MODEL
 from versioning import parse_as_of, query_intent, span_check
 from reason import ANSWER_SHAPE, DOCTRINE, as_prompt_block, think
+from expert_route import classify, expert_system
 
 
 def rewrite_query(question, history=None):
@@ -21,15 +22,31 @@ def rewrite_query(question, history=None):
     return f"{question}\n{' '.join(parts)}"[:1500]
 
 
+def _keep_source(room: str, source: str) -> bool:
+    src = str(source or "")
+    if room == "fa":
+        return not src.startswith(("learn:craft", "learn:voice", "learn:drama", "client:"))
+    if room == "craft":
+        return src.startswith(("learn:craft", "learn:all", "guide:")) or "craft" in src.lower()
+    if room == "voice":
+        return src.startswith(("learn:voice", "learn:all"))
+    if room == "drama":
+        return src.startswith(("learn:drama", "drama:"))
+    return True
+
+
 def answer(conn, question, history=None, client_excerpt="", room="fa"):
+    route = classify(question, hinted_room=room)
+    room = route.room
     lookup = rewrite_query(question, history)
     results = search(conn, lookup) or search(conn, question)
+    results = [(row, score) for row, score in results if _keep_source(room, row[1])]
     if not results and not client_excerpt:
-        return "Nothing indexed yet. Run:  python ingest.py", []
+        return "Nothing indexed for this room yet. File a lesson or run ingest.", []
 
     as_of = parse_as_of(question)
     intent = query_intent(question)
-    context = build_context(results) if results else "(no product pages retrieved)"
+    context = build_context(results) if results else "(no pages retrieved)"
     prior = ""
     if history:
         turns = []
@@ -41,13 +58,12 @@ def answer(conn, question, history=None, client_excerpt="", room="fa"):
         if turns:
             prior = "Earlier in this chat:\n" + "\n".join(turns) + "\n\n"
     client_block = ""
-    if client_excerpt:
+    if client_excerpt and room in {"fa", "roa"}:
         client_block = (
             "\n\nClient-file extracts (filed documents only):\n"
             + client_excerpt[:12000]
             + "\n"
         )
-    room = (room or "fa").lower()
     doctrine = DOCTRINE.get(room, DOCTRINE["fa"])
     think_block = ""
     if os.environ.get("FORTITUDO_THINK", "").strip() in {"1", "true", "yes"}:
@@ -55,14 +71,14 @@ def answer(conn, question, history=None, client_excerpt="", room="fa"):
         think_block = as_prompt_block(thought) + "\n"
     user = (
         f"{doctrine}\n\n{ANSWER_SHAPE}\n\n{think_block}{prior}"
-        f"Product-guide extracts (as_of={as_of}, intent={intent}):\n\n{context}\n"
+        f"Extracts (as_of={as_of}, intent={intent}):\n\n{context}\n"
         f"{client_block}"
-        f"---\n\nAdviser's question: {question}\n\n"
+        f"---\n\nQuestion: {question}\n\n"
         "Answer from the extracts only. Cite SOURCE and PAGE for figures. "
         "If a fact is from a client file, name the file. "
         "If the extracts do not contain the answer, say so. Do not invent."
     )
-    raw = chat(SYSTEM_PROMPT, user)
+    raw = chat(expert_system(room), user)
     grounded, _missing = span_check(raw, context + "\n" + (client_excerpt or ""))
     return grounded, results
 
@@ -79,7 +95,7 @@ def main():
     ap.add_argument("question", nargs="*")
     ap.add_argument("--sources", action="store_true")
     ap.add_argument("--show", metavar="Q")
-    ap.add_argument("--room", default="fa")
+    ap.add_argument("--room", default="")
     args = ap.parse_args()
     conn = store.connect()
     if args.sources:
@@ -113,7 +129,6 @@ def main():
         print_citations(results)
         return
     print(f"\nFortitudo AI  -  {CHAT_MODEL}  -  fully offline")
-    print("Ask a product question. Ctrl+C or 'quit' to exit.\n")
     history = []
     while True:
         try:
