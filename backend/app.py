@@ -8,6 +8,7 @@ import argparse
 import base64
 import json
 import os
+import re
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
@@ -17,7 +18,7 @@ import store
 import sort_engine
 from ingest import extract_any
 from retrieval import build_context, search
-from config import CHAT_MODEL, EMBED_MODEL, SYSTEM_PROMPT, MAX_PAGE_CHARS, WEB_DIR, ROOT
+from config import CHAT_MODEL, EMBED_MODEL, SYSTEM_PROMPT, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_DIR
 from llm import OllamaError, chat, has_model, health
 import website_mockup
 
@@ -29,6 +30,29 @@ except ImportError:
 HOST = "127.0.0.1"
 PORT = 8000
 MAX_BODY = 35 * 1024 * 1024
+
+# The desk UI runs on :8080 and calls this server cross-origin. A wildcard
+# would let any site the adviser has open read client files off the loopback
+# backend, which has no login, so only the desk's own port is reflected back.
+DESK_PORT = os.environ.get("FORTITUDO_DESK_PORT", "8080")
+EXTRA_ORIGINS = {
+    o.strip().rstrip("/")
+    for o in os.environ.get("FORTITUDO_ALLOWED_ORIGINS", "").split(",")
+    if o.strip()
+}
+
+
+def origin_allowed(origin: str) -> bool:
+    """True for the desk UI on any host (LAN or Tailscale) plus explicit extras."""
+    if not origin:
+        return False
+    origin = origin.rstrip("/")
+    if origin in EXTRA_ORIGINS:
+        return True
+    parsed = urlparse(origin)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    return str(parsed.port or "") == DESK_PORT
 
 
 def load_ui(filename: str) -> str:
@@ -132,6 +156,65 @@ Rules:
 7. Where product mechanics are mentioned, leave [EVIDENCE: document, page] for the adviser to complete from technical guides."""
 
 
+SHELF_SUFFIXES = {".pdf", ".md", ".txt"}
+
+LEARN_HOW = [
+    "Tell it a topic and paste the rules in your own words.",
+    "Drop product PDFs on Files — they are indexed page by page.",
+    "Client documents are filed on the client, never on this shelf.",
+]
+
+BRANCH_PURPOSE = {
+    "craft": "Design and local-marketing lessons for the Craft desk.",
+    "advisor": "Product and FAIS practice lessons behind Advisor answers.",
+    "voice": "Tone and phrasing rules for drafted copy.",
+    "drama": "Adjudication craft for the Studio desk.",
+    "all": "Lessons every desk should see.",
+}
+
+# This desk answers from filed pages. Generating unsourced material into the
+# index is the one thing FA_CHAT.md rules out, so self-teaching stays off and
+# says so rather than quietly doing nothing.
+SELF_LEARN_NOTE = (
+    "Self-teaching is off. This desk answers from filed pages, so it will not "
+    "write unsourced material into the index. File a lesson under Tell it, or "
+    "drop a guide under Files."
+)
+
+
+def shelf_files():
+    """Everything on the product and lesson shelf, straight off disk."""
+    files = []
+    if DOCS_DIR.exists():
+        for path in sorted(DOCS_DIR.rglob("*")):
+            if path.is_file() and path.suffix.lower() in SHELF_SUFFIXES:
+                rel = path.relative_to(DOCS_DIR).as_posix()
+                files.append({
+                    "name": rel,
+                    "kind": "lesson" if rel.startswith("learn/") else "guide",
+                    "bytes": path.stat().st_size,
+                })
+    return files
+
+
+def branch_shelves():
+    """Per-room lesson counts, used to show which shelves are still empty."""
+    import learn_teach
+
+    rows = []
+    for branch, folder in learn_teach.BRANCH_DIR.items():
+        count = len(list(folder.glob("*.md"))) if folder.exists() else 0
+        rows.append({
+            "id": f"learn-{branch}",
+            "branch": branch,
+            "title": f"{branch.title()} lessons",
+            "why": BRANCH_PURPOSE.get(branch, ""),
+            "count": count,
+            "have": count > 0,
+        })
+    return rows
+
+
 def json_body(handler):
     length = int(handler.headers.get("Content-Length", "0"))
     if length > MAX_BODY:
@@ -143,11 +226,26 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(fmt % args)
 
+    def cors(self):
+        origin = self.headers.get("Origin", "")
+        self.send_header("Vary", "Origin")
+        if origin_allowed(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Max-Age", "600")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.cors()
+        self.end_headers()
+
     def send_json(self, payload, code=200):
         data = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.cors()
         self.end_headers()
         self.wfile.write(data)
 
@@ -156,8 +254,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.cors()
         self.end_headers()
         self.wfile.write(data)
+
+    def research_from_shelf(self, title: str, text: str):
+        """Expand a filed lesson from pages already indexed — never from general
+        knowledge. Returns None when nothing is on file or the model is down."""
+        try:
+            results = search(store.connect(), f"{title} {text}"[:2000])
+            if not results:
+                return None
+            prompt = (
+                f"Document extracts:\n\n{build_context(results)}\n\n---\n\n"
+                f"Lesson just filed — {title}:\n{text[:2000]}\n\n"
+                "List what the extracts above add to this lesson, citing document and page "
+                "for every point. If they add nothing, say so in one line."
+            )
+            note = chat(SYSTEM_PROMPT, prompt)
+        except Exception:
+            return None
+        if not note.strip():
+            return None
+        import learn_teach
+        path = learn_teach.file_lesson(f"{title} — from filed pages", note, "all")
+        return {"title": path.stem}
 
     def send_file(self, path: Path, content_type: str):
         if not path.exists() or not path.is_file():
@@ -171,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
+        self.cors()
         self.end_headers()
         self.wfile.write(content)
 
@@ -203,6 +325,40 @@ class Handler(BaseHTTPRequestHandler):
                     "clients_indexed": sum(1 for n, c in store.sources(conn) if n.startswith("client:")),
                     "sources": [{"name": n, "pages": c} for n, c in store.sources(conn)],
                 })
+            if parts == ["api", "learn"]:
+                conn = store.connect()
+                return self.send_json({
+                    "docs": shelf_files(),
+                    "sources": [{"name": n, "pages": c} for n, c in store.sources(conn)],
+                    "how": LEARN_HOW,
+                })
+            if parts == ["api", "learn", "self"]:
+                return self.send_json({
+                    "enabled": False,
+                    "interval_hours": 0,
+                    "last": None,
+                    "curriculum": [
+                        {"id": row["id"], "title": row["title"], "why": row["why"]}
+                        for row in branch_shelves() if not row["have"]
+                    ],
+                    "note": SELF_LEARN_NOTE,
+                })
+            if parts == ["api", "learn", "discover"]:
+                shelves = branch_shelves()
+                return self.send_json({
+                    "catalog": [
+                        {
+                            "id": row["id"], "branch": row["branch"], "title": row["title"],
+                            "why": row["why"], "url": "", "ask": f"Teach me {row['branch']}: ",
+                        }
+                        for row in shelves
+                    ],
+                    "gaps": [
+                        {"id": row["id"], "title": row["title"], "branch": row["branch"], "have": row["have"]}
+                        for row in shelves
+                    ],
+                    "rule": "Shelves are read off disk. Nothing here is researched for you.",
+                })
             if parts == ["api", "clients"]:
                 return self.send_json(client_store.list_clients())
             if len(parts) == 3 and parts[:2] == ["api", "clients"]:
@@ -227,6 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(content)))
+                self.cors()
                 self.end_headers()
                 self.wfile.write(content)
                 return
@@ -312,6 +469,68 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"draft": draft, "path": path})
                 if action == "meeting-prep":
                     return self.send_json(client_store.meeting_prep(cid))
+            if parts == ["api", "learn", "self"]:
+                return self.send_json({"ok": False, "errors": [SELF_LEARN_NOTE]})
+            if parts == ["api", "learn", "teach"]:
+                import learn_teach
+                title = str(body.get("title", "")).strip() or "Lesson"
+                text = str(body.get("text", "")).strip()
+                if not text:
+                    raise ValueError("Paste what it should learn. This desk does not invent the lesson for you.")
+                applies = str(body.get("applies", "") or "all")
+                path = learn_teach.file_lesson(title, text, applies)
+                conn = store.connect()
+                pages = dict(store.sources(conn)).get(f"learn:{applies}:{path.name}", 0)
+                researched = None
+                if body.get("research"):
+                    researched = self.research_from_shelf(title, text)
+                return self.send_json({
+                    "ok": True, "pages": pages, "source": path.name, "researched": researched,
+                })
+            if parts == ["api", "ingest", "paste"]:
+                import learn_teach
+                title = str(body.get("title", "")).strip() or "Note"
+                text = str(body.get("text", "")).strip()
+                if not text:
+                    raise ValueError("Paste some text to file.")
+                path = learn_teach.file_lesson(title, text, "all")
+                conn = store.connect()
+                pages = dict(store.sources(conn)).get(f"learn:all:{path.name}", 0)
+                return self.send_json({
+                    "ok": True, "pages": pages, "source": path.name,
+                    "branches": ["advisor", "drama", "craft"],
+                })
+            if parts == ["api", "ingest", "guides"]:
+                import ingest
+                filename = str(body.get("filename", "")).strip()
+                if not filename:
+                    raise ValueError("Give the guide a filename.")
+                suffix = Path(filename).suffix.lower()
+                if suffix not in SHELF_SUFFIXES:
+                    raise ValueError("Guides must be PDF, TXT or MD.")
+                raw = base64.b64decode(body.get("content_base64", ""), validate=True)
+                if not raw or len(raw) > 25 * 1024 * 1024:
+                    raise ValueError("Choose a guide smaller than 25 MB.")
+                topic = re.sub(r"[^a-z0-9]+", "-", str(body.get("topic", "misc")).lower()).strip("-") or "misc"
+                safe = Path(filename).name
+                dest = DOCS_DIR / "learn" / topic / safe
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(raw)
+                source = f"learn:{topic}:{safe}"
+                pages = ingest.ingest_file(store.connect(), dest, rebuild=False, source_name=source)
+                return self.send_json({"ok": True, "pages": pages, "topic": topic, "source": source})
+            if parts == ["api", "sight"]:
+                import sight
+                image = str(body.get("image_base64", ""))
+                if not image:
+                    raise ValueError("Attach an image.")
+                return self.send_json(sight.ingest_sight(
+                    image,
+                    str(body.get("filename", "shot.png")),
+                    str(body.get("caption", "")),
+                    str(body.get("intent", "chat")),
+                    str(body.get("client_id", "")),
+                ))
             if parts == ["api", "ingest", "clients"]:
                 import ingest
                 client_store.sync_from_disk()
