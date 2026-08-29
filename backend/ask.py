@@ -1,8 +1,8 @@
 """
 Fortitudo AI - ask
 
-Hybrid retrieval (dense + BM25 + RRF) over the page index, then a grounded
-answer from the local model with page citations.
+Hybrid retrieval over the page index, then a grounded answer.
+Figures that are not in the extracts are stripped.
 """
 import argparse
 import sys
@@ -11,10 +11,10 @@ import store
 from retrieval import search, build_context
 from llm import chat, health, has_model, OllamaError
 from config import SYSTEM_PROMPT, CHAT_MODEL, EMBED_MODEL
+from versioning import parse_as_of, query_intent, span_check
 
 
 def rewrite_query(question, history=None):
-    """Keep follow-ups grounded in the last product names and page cites."""
     parts = [question]
     if history:
         for turn in history[-6:]:
@@ -32,6 +32,8 @@ def answer(conn, question, history=None, client_excerpt=""):
     if not results and not client_excerpt:
         return "Nothing indexed yet. Run:  python ingest.py", []
 
+    as_of = parse_as_of(question)
+    intent = query_intent(question)
     context = build_context(results) if results else "(no product pages retrieved)"
     prior = ""
     if history:
@@ -52,21 +54,25 @@ def answer(conn, question, history=None, client_excerpt=""):
         )
     user = (
         f"{prior}"
-        f"Product-guide extracts:\n\n{context}\n"
+        f"Product-guide extracts (as_of={as_of}, intent={intent}):\n\n{context}\n"
         f"{client_block}"
         f"---\n\nAdviser's question: {question}\n\n"
         "Answer from the extracts above only. For every figure, percentage, "
         "waiting period or definition, cite SOURCE and PAGE exactly as labelled. "
         "If a fact comes from a client file, say so and name the file. "
         "If the extracts do not contain the answer, say so plainly — do not infer. "
+        "Do not invent a percentage, day-count or definition. "
         "Keep continuity with earlier turns; do not drop a cited page the adviser is still using."
     )
-    return chat(SYSTEM_PROMPT, user), results
+    raw = chat(SYSTEM_PROMPT, user)
+    grounded, _missing = span_check(raw, context + "\n" + (client_excerpt or ""))
+    return grounded, results
 
 
 def print_citations(results):
     print("\n  Sources consulted:")
-    for (rid, source, page, text, _emb), score in results:
+    for row, score in results:
+        source, page = row[1], row[2]
         print(f"    {score:6.4f}  {source}  p.{page}")
     print("\n  Verify any figure on the page before quoting it to a client.\n")
 
@@ -92,9 +98,9 @@ def main():
         return
 
     if args.show:
-        for (rid, source, page, text, _e), score in search(conn, args.show):
-            print(f"\n=== {source} p.{page}  (score {score:.4f}) ===")
-            print(text[:1500])
+        for row, score in search(conn, args.show):
+            print(f"\n=== {row[1]} p.{row[2]}  (score {score:.4f}) ===")
+            print(row[3][:1500])
         print()
         return
 
