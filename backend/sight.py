@@ -54,7 +54,7 @@ def ingest_sight(image_b64, filename, caption, intent="chat", client_id=""):
     dest.write_bytes(__import__("base64").b64decode(raw))
     extract = describe_image(raw, caption, intent)
     applies = "Craft" if intent in ("idea", "craft") else ("Advisor" if intent == "client" else "Learn")
-    md_path = DOCS_DIR / "learn" / "all" / dest.with_suffix(".md").name
+    md_path = DOCS_DIR / "learn" / "sight" / dest.with_suffix(".md").name
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(
         f"# Sight — {intent} — {caption or filename}\n\nApplies to: {applies}\nImage: {dest.name}\n\n## Caption\n{caption}\n\n## Extract\n{extract}\n",
@@ -64,7 +64,7 @@ def ingest_sight(image_b64, filename, caption, intent="chat", client_id=""):
     if intent not in ("idea", "craft"):
         try:
             import ingest, store
-            pages = ingest.ingest_file(store.connect(), md_path, rebuild=False, source_name=f"learn:all:{md_path.name}")
+            pages = ingest.ingest_file(store.connect(), md_path, rebuild=False, source_name=f"learn:sight:{md_path.name}")
         except Exception:
             pages = 0
     return {"ok": True, "intent": intent, "extract": extract, "pages": pages, "vision": _vision_model() or "", "note": str(md_path)}

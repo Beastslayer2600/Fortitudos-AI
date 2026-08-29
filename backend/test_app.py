@@ -10,6 +10,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import app
+import client_store
 
 
 def request(server, path, method="GET", body=None, origin=None):
@@ -120,6 +121,56 @@ class Routes(unittest.TestCase):
     def test_unknown_route_is_404(self):
         status, _, _ = request(self.server, "/api/nope")
         self.assertEqual(status, 404)
+
+
+
+class AdvisorNeverSelfLearns(unittest.TestCase):
+    """Nothing the model wrote may come back as Advisor evidence."""
+
+    def test_ask_excludes_machine_written_sources(self):
+        self.assertIn("learn:craft:", app.MACHINE_WRITTEN_SOURCES)
+        self.assertIn("learn:sight:", app.MACHINE_WRITTEN_SOURCES)
+
+    def test_search_drops_excluded_prefixes(self):
+        import numpy as np
+        import retrieval
+
+        rows = [
+            (1, "guide.pdf", 1, "waiting period is six months", None),
+            (2, "learn:craft:flyer.md", 1, "waiting period headline for flyers", None),
+            (3, "learn:sight:shot.md", 1, "waiting period seen in a photo", None),
+        ]
+        matrix = np.zeros((3, 2), dtype=np.float32)
+
+        def fake_load_all(_conn):
+            return rows, matrix
+
+        real_load_all, real_embed = retrieval.store.load_all, retrieval.embed
+        retrieval.store.load_all = fake_load_all
+        retrieval.embed = lambda _q: [[0.0, 0.0]]
+        try:
+            kept = {
+                r[0][1]
+                for r in retrieval.search(None, "waiting period",
+                                          exclude_prefixes=app.MACHINE_WRITTEN_SOURCES)
+            }
+        finally:
+            retrieval.store.load_all, retrieval.embed = real_load_all, real_embed
+        self.assertEqual(kept, {"guide.pdf"})
+
+    def test_teach_never_generates_a_lesson(self):
+        self.assertFalse(hasattr(app.Handler, "research_from_shelf"))
+
+    def test_generated_drafts_are_typed_and_quarantined(self):
+        self.assertEqual(client_store.AI_DRAFT_TYPE, "AI draft")
+        self.assertNotIn(client_store.AI_DRAFT_FOLDER, client_store.FOLDERS.values())
+
+    def test_draft_context_skips_earlier_drafts(self):
+        client = {"documents": [
+            {"doc_type": client_store.AI_DRAFT_TYPE, "relative_path": "/nope.md", "filename": "d.md"},
+        ]}
+        with self.assertRaises(ValueError):
+            app.client_source_text(client)
 
 
 if __name__ == "__main__":

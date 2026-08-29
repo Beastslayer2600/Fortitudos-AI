@@ -119,6 +119,8 @@ def client_source_text(client):
     pieces = []
     total = 0
     for doc in client["documents"]:
+        if doc["doc_type"] == client_store.AI_DRAFT_TYPE:
+            continue  # never let a draft become the source for the next one
         path = Path(doc["relative_path"])
         if not path.exists():
             continue
@@ -180,6 +182,16 @@ SELF_LEARN_NOTE = (
     "write unsourced material into the index. File a lesson under Tell it, or "
     "drop a guide under Files."
 )
+
+RESEARCH_NOTE = (
+    "Filed as you wrote it. Advisor does not research a lesson for itself — "
+    "an answer it cited later would be its own words, not a filed page."
+)
+
+# Advisor answers under FAIS, so it retrieves only what a person filed. These
+# prefixes are written by the model (Craft's design lessons, Sight's reading of
+# a photo); they stay available to their own rooms and out of /api/ask.
+MACHINE_WRITTEN_SOURCES = ("learn:craft:", "learn:sight:")
 
 
 def shelf_files():
@@ -257,28 +269,6 @@ class Handler(BaseHTTPRequestHandler):
         self.cors()
         self.end_headers()
         self.wfile.write(data)
-
-    def research_from_shelf(self, title: str, text: str):
-        """Expand a filed lesson from pages already indexed — never from general
-        knowledge. Returns None when nothing is on file or the model is down."""
-        try:
-            results = search(store.connect(), f"{title} {text}"[:2000])
-            if not results:
-                return None
-            prompt = (
-                f"Document extracts:\n\n{build_context(results)}\n\n---\n\n"
-                f"Lesson just filed — {title}:\n{text[:2000]}\n\n"
-                "List what the extracts above add to this lesson, citing document and page "
-                "for every point. If they add nothing, say so in one line."
-            )
-            note = chat(SYSTEM_PROMPT, prompt)
-        except Exception:
-            return None
-        if not note.strip():
-            return None
-        import learn_teach
-        path = learn_teach.file_lesson(f"{title} — from filed pages", note, "all")
-        return {"title": path.stem}
 
     def send_file(self, path: Path, content_type: str):
         if not path.exists() or not path.is_file():
@@ -481,11 +471,9 @@ class Handler(BaseHTTPRequestHandler):
                 path = learn_teach.file_lesson(title, text, applies)
                 conn = store.connect()
                 pages = dict(store.sources(conn)).get(f"learn:{applies}:{path.name}", 0)
-                researched = None
-                if body.get("research"):
-                    researched = self.research_from_shelf(title, text)
                 return self.send_json({
-                    "ok": True, "pages": pages, "source": path.name, "researched": researched,
+                    "ok": True, "pages": pages, "source": path.name,
+                    "researched": None, "note": RESEARCH_NOTE if body.get("research") else "",
                 })
             if parts == ["api", "ingest", "paste"]:
                 import learn_teach
@@ -544,7 +532,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not question or len(question) > 2000:
                     raise ValueError("Enter a question up to 2,000 characters.")
                 conn = store.connect()
-                results = search(conn, question)
+                results = search(conn, question, exclude_prefixes=MACHINE_WRITTEN_SOURCES)
                 if not results:
                     return self.send_json({
                         "answer": "Nothing is indexed yet. Run `python ingest.py` first.",

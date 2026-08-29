@@ -217,6 +217,10 @@ def ingest_clients(conn: sqlite3.Connection, rebuild: bool = False) -> int:
         if not client_dir.exists():
             continue
         for doc_file in client_dir.rglob("*"):
+            # A draft the model wrote is not evidence; indexing it would let the
+            # next answer cite it back as if the adviser had filed it.
+            if client_store.AI_DRAFT_FOLDER in doc_file.parts:
+                continue
             if doc_file.is_file() and doc_file.suffix.lower() in {".pdf", ".txt", ".md"}:
                 source_name = f"client:{cid}:{doc_file.name}"
                 total += ingest_file(conn, doc_file, rebuild=rebuild, source_name=source_name)

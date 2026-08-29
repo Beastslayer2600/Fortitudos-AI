@@ -19,4 +19,20 @@ The adviser desk is only useful if the model stays on **filed pages** and **clie
 4. Open Advisor, select the client, ask against the page
 5. Follow-ups stay on those pages
 
+## What it will never do
+
+Advisor does not teach itself. Self-learning is off, and `/api/learn/teach`
+files your words verbatim — it will not research a topic and file the result.
+
+Nothing the model wrote can come back as Advisor evidence:
+
+| Written by the model | Where it goes | Advisor sees it |
+|---|---|---|
+| Craft design lessons | `learn:craft:` | No |
+| Sight's reading of a photo | `learn:sight:` | No |
+| RoA / advice-summary drafts | the client's `99_AI_Drafts/` | No — not indexed |
+
+Craft and Studio still read their own shelves. The rule is only that an answer
+you rely on under FAIS cites a filed page, never the desk's own earlier output.
+
 FAIS: you remain the adviser. Craft never carries FSP branding.

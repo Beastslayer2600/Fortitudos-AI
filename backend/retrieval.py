@@ -142,9 +142,23 @@ def _rrf_fuse(rank_lists: List[List[int]], k: int = RRF_K) -> Dict[int, float]:
     return fused
 
 
-def search(conn, query: str, top_k: int = TOP_K) -> List[Tuple[Any, float]]:
-    """Hybrid dense + BM25 retrieval with Reciprocal Rank Fusion."""
+def search(
+    conn,
+    query: str,
+    top_k: int = TOP_K,
+    exclude_prefixes: Tuple[str, ...] = (),
+) -> List[Tuple[Any, float]]:
+    """Hybrid dense + BM25 retrieval with Reciprocal Rank Fusion.
+
+    `exclude_prefixes` drops sources by name before scoring, so a room can be
+    held to the corpus it is allowed to answer from.
+    """
     rows, matrix = store.load_all(conn)
+    if exclude_prefixes:
+        keep = [i for i, r in enumerate(rows) if not str(r[1]).startswith(exclude_prefixes)]
+        if len(keep) != len(rows):
+            rows = [rows[i] for i in keep]
+            matrix = matrix[keep] if len(keep) else matrix[:0]
     if not rows:
         return []
 
