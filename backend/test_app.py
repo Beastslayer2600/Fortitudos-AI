@@ -128,8 +128,15 @@ class AdvisorNeverSelfLearns(unittest.TestCase):
     """Nothing the model wrote may come back as Advisor evidence."""
 
     def test_ask_excludes_machine_written_sources(self):
-        self.assertIn("learn:craft:", app.MACHINE_WRITTEN_SOURCES)
-        self.assertIn("learn:sight:", app.MACHINE_WRITTEN_SOURCES)
+        import retrieval
+        self.assertIn("learn:craft:", retrieval.MACHINE_WRITTEN_SOURCES)
+        self.assertIn("learn:sight:", retrieval.MACHINE_WRITTEN_SOURCES)
+
+    def test_only_the_adviser_rooms_are_restricted(self):
+        import retrieval
+        self.assertEqual(retrieval.corpus_exclusions("fa"), retrieval.MACHINE_WRITTEN_SOURCES)
+        self.assertEqual(retrieval.corpus_exclusions("roa"), retrieval.MACHINE_WRITTEN_SOURCES)
+        self.assertEqual(retrieval.corpus_exclusions("craft"), ())
 
     def test_search_drops_excluded_prefixes(self):
         import numpy as np
@@ -152,7 +159,7 @@ class AdvisorNeverSelfLearns(unittest.TestCase):
             kept = {
                 r[0][1]
                 for r in retrieval.search(None, "waiting period",
-                                          exclude_prefixes=app.MACHINE_WRITTEN_SOURCES)
+                                          exclude_prefixes=retrieval.MACHINE_WRITTEN_SOURCES)
             }
         finally:
             retrieval.store.load_all, retrieval.embed = real_load_all, real_embed

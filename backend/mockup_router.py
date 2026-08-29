@@ -8,11 +8,9 @@ def generate_from_client_documents(client_name: str, source_text: str, extra_bri
     blob = f"{client_name}\n{extra_brief}\n{source_text}"
     refuse = refuse_reason(blob)
     if refuse:
-        return (
-            "<!DOCTYPE html><html lang='en-ZA'><body><p>"
-            + refuse
-            + "</p></body></html>"
-        )
+        # Raise rather than render: a refusal page filed in the client folder
+        # would look like a mockup someone could hand over.
+        raise ValueError(refuse)
     kind = kind_of(blob)
     if kind == "trade":
         return generate_trade_page(client_name, blob)
@@ -24,4 +22,5 @@ def generate_from_client_documents(client_name: str, source_text: str, extra_bri
         "Do not invent FSP numbers, AUM or testimonials. "
         "Do not use a client's FNA as page copy."
     )
-    return generate_mockup(brief, client_context=source_text if kind == "practice" else source_text)
+    # Only the practice storefront may draw on the filed text.
+    return generate_mockup(brief, client_context=source_text if kind == "practice" else "")

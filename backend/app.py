@@ -17,7 +17,7 @@ import client_store
 import store
 import sort_engine
 from ingest import extract_any
-from retrieval import build_context, search
+from retrieval import build_context, corpus_exclusions, search
 from config import CHAT_MODEL, EMBED_MODEL, SYSTEM_PROMPT, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_DIR
 from llm import OllamaError, chat, has_model, health
 import website_mockup
@@ -188,10 +188,6 @@ RESEARCH_NOTE = (
     "an answer it cited later would be its own words, not a filed page."
 )
 
-# Advisor answers under FAIS, so it retrieves only what a person filed. These
-# prefixes are written by the model (Craft's design lessons, Sight's reading of
-# a photo); they stay available to their own rooms and out of /api/ask.
-MACHINE_WRITTEN_SOURCES = ("learn:craft:", "learn:sight:")
 
 
 def shelf_files():
@@ -425,7 +421,11 @@ class Handler(BaseHTTPRequestHandler):
                     # Website mockup: structured HTML via dedicated generator
                     if draft_type in ("Website mockup", "Client website mockup"):
                         brief = str(body.get("brief", "")).strip()
-                        html = website_mockup.generate_from_client_documents(
+                        # Router, not website_mockup direct: crossover.py refuses
+                        # to turn an FNA or RoA into page copy.
+                        import mockup_router
+
+                        html = mockup_router.generate_from_client_documents(
                             client.get("name") or cid, source, extra_brief=brief,
                         )
                         filename = "website_mockup.html"
@@ -532,12 +532,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not question or len(question) > 2000:
                     raise ValueError("Enter a question up to 2,000 characters.")
                 conn = store.connect()
-                results = search(conn, question, exclude_prefixes=MACHINE_WRITTEN_SOURCES)
-                if not results:
-                    return self.send_json({
-                        "answer": "Nothing is indexed yet. Run `python ingest.py` first.",
-                        "sources": [],
-                    })
+                room = str(body.get("room", "fa"))
+                results = search(conn, question, exclude_prefixes=corpus_exclusions(room))
                 if body.get("show_only"):
                     pages = []
                     for (rid, source, page, text, _emb), score in results:
@@ -550,15 +546,28 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"show_only": True, "pages": pages, "sources": [
                         {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3)} for r in results
                     ]})
-                context = build_context(results)
-                prompt = (
-                    f"Document extracts:\n\n{context}\n\n---\n\nAdviser's question: {question}\n\n"
-                    "Answer from the extracts above, citing document and page for every figure. "
-                    "If the answer is not in the extracts, say so."
+                # Same path as the CLI: history rewriting, room doctrine, the
+                # client-file block and the span check that strips a figure the
+                # retrieved pages do not support.
+                import ask as ask_module
+
+                excerpt = ""
+                client_id = str(body.get("client_id", "")).strip()
+                if client_id:
+                    client = client_store.get_client(client_id)
+                    if not client:
+                        raise ValueError("Client not found.")
+                    try:
+                        excerpt = client_source_text(client)
+                    except ValueError:
+                        excerpt = ""  # nothing readable filed yet — answer without it
+                history = body.get("history") if isinstance(body.get("history"), list) else []
+                text, results = ask_module.answer(
+                    conn, question, history=history, client_excerpt=excerpt, room=room,
                 )
-                answer = chat(SYSTEM_PROMPT, prompt)
                 return self.send_json({
-                    "answer": answer,
+                    "answer": text,
+                    "used_client_files": bool(excerpt),
                     "sources": [
                         {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3)}
                         for r in results

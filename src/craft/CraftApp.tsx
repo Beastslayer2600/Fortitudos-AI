@@ -9,6 +9,7 @@ import {
   doorLetter,
   jobFolderHint,
   mailtoLetter,
+  mayContactElectronically,
   newHandLead,
   nounFor,
   whatsappLink,
@@ -200,13 +201,23 @@ export function CraftApp() {
           <p className="text-xs text-muted-foreground">
             Electronic send only after YES. First WhatsApp is a consent ask.
           </p>
-          <a className="block text-sm underline" href={mailtoLetter(lead, mockUrl)}>
-            Email (consent-aware)
-          </a>
-          {whatsappLink(lead.phone, lead.name, mockUrl, lead.consent) && (
-            <a className="block text-sm underline" href={whatsappLink(lead.phone, lead.name, mockUrl, lead.consent)}>
-              WhatsApp (consent-aware)
-            </a>
+          {mayContactElectronically(lead).allowed ? (
+            <>
+              {mailtoLetter(lead, mockUrl) && (
+                <a className="block text-sm underline" href={mailtoLetter(lead, mockUrl)}>
+                  Email (consent-aware)
+                </a>
+              )}
+              {whatsappLink(lead.phone, lead.name, mockUrl, lead.consent) && (
+                <a className="block text-sm underline" href={whatsappLink(lead.phone, lead.name, mockUrl, lead.consent)}>
+                  WhatsApp (consent-aware)
+                </a>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No electronic send: {mayContactElectronically(lead).reason} The printed door letter is still fine.
+            </p>
           )}
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={() => patchLead(lead.id, { consent: "asked", touch: "sent" })}>

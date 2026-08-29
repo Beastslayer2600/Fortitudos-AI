@@ -142,6 +142,18 @@ def _rrf_fuse(rank_lists: List[List[int]], k: int = RRF_K) -> Dict[int, float]:
     return fused
 
 
+# Written by the model, not filed by a person. Advisor answers under FAIS, so
+# these stay out of its corpus; their own rooms still read them.
+MACHINE_WRITTEN_SOURCES = ("learn:craft:", "learn:sight:")
+
+# Rooms that answer as the adviser and must cite a filed page.
+ADVISER_ROOMS = ("fa", "roa")
+
+
+def corpus_exclusions(room: str) -> Tuple[str, ...]:
+    return MACHINE_WRITTEN_SOURCES if (room or "fa").lower() in ADVISER_ROOMS else ()
+
+
 def search(
     conn,
     query: str,

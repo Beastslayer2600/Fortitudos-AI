@@ -4,7 +4,7 @@ import os
 import sys
 
 import store
-from retrieval import search, build_context
+from retrieval import search, build_context, corpus_exclusions
 from llm import chat, health, has_model, OllamaError
 from config import SYSTEM_PROMPT, CHAT_MODEL, EMBED_MODEL
 from versioning import parse_as_of, query_intent, span_check
@@ -23,7 +23,9 @@ def rewrite_query(question, history=None):
 
 def answer(conn, question, history=None, client_excerpt="", room="fa"):
     lookup = rewrite_query(question, history)
-    results = search(conn, lookup) or search(conn, question)
+    drop = corpus_exclusions(room)
+    results = (search(conn, lookup, exclude_prefixes=drop)
+               or search(conn, question, exclude_prefixes=drop))
     if not results and not client_excerpt:
         return "Nothing indexed yet. Run:  python ingest.py", []
 
