@@ -6,6 +6,7 @@ import {
   SKU,
   TERRITORIES,
   claimGuard,
+  doorLetter,
   jobFolderHint,
   mailtoLetter,
   newHandLead,
@@ -13,6 +14,7 @@ import {
   whatsappLink,
   type CraftLead,
 } from "@/lib/craft";
+import { morningRoute, routeLabel, scoreLead } from "@/lib/craft-leadgen";
 import { loadLedger, saveLedger } from "@/lib/craft-ledger";
 import { fallbackSpec } from "@/lib/craft-spec";
 import { TradeObject } from "@/craft/TradeObject";
@@ -40,6 +42,7 @@ export function CraftApp() {
         : null,
     [lead],
   );
+  const route = useMemo(() => morningRoute(leads), [leads]);
 
   function commit(next: CraftLead[]) {
     setLeads(saveLedger(next));
@@ -70,7 +73,7 @@ export function CraftApp() {
           <h1 className="font-serif text-3xl">One shop. One page. One letter.</h1>
           <p className="mt-1 max-w-xl text-sm text-muted-foreground">
             R{SKU.price.toLocaleString("en-ZA")} once · R{SKU.deposit.toLocaleString("en-ZA")} to start.
-            No invented claims.
+            Walk the hot list. Do not blast WhatsApp.
           </p>
         </div>
         <nav className="flex flex-wrap gap-1">
@@ -84,25 +87,37 @@ export function CraftApp() {
 
       {step === "Jobs" && (
         <section className="grid gap-6 md:grid-cols-[1fr_280px]">
-          <div className="space-y-2">
-            {leads.map((row) => (
-              <button
-                key={row.id}
-                type="button"
-                onClick={() => setActiveId(row.id)}
-                className={`flex w-full items-start justify-between rounded-lg border px-3 py-3 text-left ${
-                  row.id === activeId ? "border-foreground/40 bg-muted/40" : "border-border"
-                }`}
-              >
-                <span>
-                  <span className="block font-medium">{row.name}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {row.type} · {row.city} · {row.source}
+          <div className="space-y-3">
+            {route.length > 0 && (
+              <div className="rounded-lg border border-border p-3 text-sm">
+                <p className="text-xs uppercase tracking-wider text-muted-foreground">This morning</p>
+                <p className="font-medium">{routeLabel(route)}</p>
+                <p className="text-muted-foreground">{route.length} shops · print the letter · walk</p>
+              </div>
+            )}
+            {leads.map((row) => {
+              const s = scoreLead(row);
+              return (
+                <button
+                  key={row.id}
+                  type="button"
+                  onClick={() => setActiveId(row.id)}
+                  className={`flex w-full items-start justify-between rounded-lg border px-3 py-3 text-left ${
+                    row.id === activeId ? "border-foreground/40 bg-muted/40" : "border-border"
+                  }`}
+                >
+                  <span>
+                    <span className="block font-medium">{row.name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {row.type} · {row.city} · {s.reasons[0]}
+                    </span>
                   </span>
-                </span>
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{row.touch}</span>
-              </button>
-            ))}
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    {s.band} · {row.touch}
+                  </span>
+                </button>
+              );
+            })}
           </div>
           <aside className="space-y-2 rounded-lg border border-border p-3">
             <p className="text-xs uppercase tracking-wider text-muted-foreground">Hand intake</p>
@@ -118,7 +133,7 @@ export function CraftApp() {
                 <option key={t}>{t}</option>
               ))}
             </select>
-            <Textarea placeholder="Facts only" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+            <Textarea placeholder="Facts only — hours, trades, what is on the door" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
             <Button className="w-full" onClick={addHand} disabled={!form.name.trim()}>
               Add to book
             </Button>
@@ -129,7 +144,8 @@ export function CraftApp() {
       {step === "Audit" && lead && (
         <section className="space-y-4">
           <p className="text-sm text-muted-foreground">Job folder: {jobFolderHint(lead)}</p>
-          <Input placeholder="https://their-site.example" value={auditUrl || lead.website} onChange={(e) => setAuditUrl(e.target.value)} />
+          <p className="text-xs text-muted-foreground">{scoreLead(lead).reasons.join(" · ")}</p>
+          <Input placeholder="Existing site or Facebook URL" value={auditUrl || lead.website} onChange={(e) => setAuditUrl(e.target.value)} />
           <Textarea rows={6} value={lead.note} onChange={(e) => patchLead(lead.id, { note: claimGuard(e.target.value) })} />
           <Button
             onClick={() => {
@@ -171,7 +187,7 @@ export function CraftApp() {
           </div>
           <div className="flex justify-end p-4">
             <Button variant="outline" onClick={() => setStep("Send")}>
-              Send or call
+              Print letter
             </Button>
           </div>
         </section>
@@ -179,14 +195,30 @@ export function CraftApp() {
 
       {step === "Send" && lead && (
         <section className="space-y-4">
-          <p className="text-sm">Mock: {mockUrl}</p>
-          <a href={mailtoLetter(lead, mockUrl)}>Open letter</a>
-          {whatsappLink(lead.phone, lead.name, mockUrl) && (
-            <a href={whatsappLink(lead.phone, lead.name, mockUrl)}>WhatsApp</a>
+          <pre className="whitespace-pre-wrap rounded-lg border border-border p-4 text-sm">{doorLetter(lead, mockUrl)}</pre>
+          <Button onClick={() => window.print()}>Print door letter</Button>
+          <p className="text-xs text-muted-foreground">
+            Electronic send only after YES. First WhatsApp is a consent ask.
+          </p>
+          <a className="block text-sm underline" href={mailtoLetter(lead, mockUrl)}>
+            Email (consent-aware)
+          </a>
+          {whatsappLink(lead.phone, lead.name, mockUrl, lead.consent) && (
+            <a className="block text-sm underline" href={whatsappLink(lead.phone, lead.name, mockUrl, lead.consent)}>
+              WhatsApp (consent-aware)
+            </a>
           )}
-          <Button variant="outline" onClick={() => patchLead(lead.id, { touch: "sent" })}>
-            Mark sent
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => patchLead(lead.id, { consent: "asked", touch: "sent" })}>
+              Mark asked
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => patchLead(lead.id, { consent: "consented" })}>
+              They said yes
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => patchLead(lead.id, { consent: "refused" })}>
+              They said no
+            </Button>
+          </div>
         </section>
       )}
     </div>
