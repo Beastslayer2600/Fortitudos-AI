@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  claimGuard,
   mayContactElectronically,
   mailtoLetter,
   whatsappLink,
@@ -41,4 +42,16 @@ test("consent and existing-customer both allow the pitch", () => {
     const wa = decodeURIComponent(whatsappLink("0119751234", "Joe", "https://x", state));
     assert.match(wa, /I made a mock page/);
   }
+});
+
+test("claimGuard strips every banned claim, not just the first", () => {
+  const cleaned = claimGuard("Best in SA, award-winning, open 24/7 with guaranteed results.");
+  for (const claim of ["Best in SA", "award-winning", "24/7", "guaranteed results"]) {
+    assert.ok(!cleaned.toLowerCase().includes(claim.toLowerCase()), `${claim} survived: ${cleaned}`);
+  }
+});
+
+test("claimGuard leaves honest copy alone", () => {
+  const honest = "Geyser repairs in Kempton Park. Call before 17:00.";
+  assert.equal(claimGuard(honest), honest);
 });

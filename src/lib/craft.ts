@@ -51,8 +51,10 @@ export function nounFor(type: string, name = ""): string {
   return "sign";
 }
 
+// Global: without /g, replace() strips only the first claim and a note that
+// stacks several keeps all but one.
 const BANNED =
-  /\b(best in (sa|south africa|gauteng)|#1|award[- ]winning|24\/7|always open|guaranteed results|5[- ]star reviews?|no\. ?1)\b/i;
+  /\b(best in (sa|south africa|gauteng)|#1|award[- ]winning|24\/7|always open|guaranteed results|5[- ]star reviews?|no\. ?1)\b/gi;
 
 export function claimGuard(text: string): string {
   return text.replace(BANNED, "").replace(/\s{2,}/g, " ").replace(/\s+\./g, ".").trim();
