@@ -21,3 +21,9 @@ Start Fortitudo Desk.bat
 3. **Craft** — local shop book, mock page, walk-in pack (`/craft`)
 
 Craft is in this repo: `src/craft/CraftApp.tsx` plus `src/lib/craft.ts`.
+
+## Routing
+
+`backend/expert_route.py` classifies the job, `backend/rooms.py` says what that
+room may read, and `backend/crossover.py` refuses work that belongs elsewhere —
+Craft may edit the practice storefront, never a client file. See `FA_CHAT.md`.

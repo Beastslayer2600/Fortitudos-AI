@@ -6,9 +6,11 @@ import sys
 import store
 from retrieval import search, build_context, corpus_exclusions
 from llm import chat, health, has_model, OllamaError
-from config import SYSTEM_PROMPT, CHAT_MODEL, EMBED_MODEL
+from config import CHAT_MODEL, EMBED_MODEL
 from versioning import parse_as_of, query_intent, span_check
-from reason import ANSWER_SHAPE, DOCTRINE, as_prompt_block, think
+from reason import ANSWER_SHAPE, as_prompt_block, think
+from rooms import get_room
+from expert_route import expert_system
 
 
 def rewrite_query(question, history=None):
@@ -22,11 +24,26 @@ def rewrite_query(question, history=None):
 
 
 def answer(conn, question, history=None, client_excerpt="", room="fa"):
-    lookup = rewrite_query(question, history)
-    drop = corpus_exclusions(room)
-    results = (search(conn, lookup, exclude_prefixes=drop)
-               or search(conn, question, exclude_prefixes=drop))
+    """Answer in one room, under that room's corpus rules.
+
+    rooms.py decides what the room may read: whether the product index is in
+    scope at all, and whether filed client documents may be quoted. Passing an
+    excerpt to a room that is not client-aware does not make it client-aware.
+    """
+    room = (room or "fa").lower()
+    spec = get_room(room)
+    if not spec.include_clients:
+        client_excerpt = ""
+
+    results = []
+    if spec.allow_product_index:
+        lookup = rewrite_query(question, history)
+        drop = corpus_exclusions(room)
+        results = (search(conn, lookup, exclude_prefixes=drop)
+                   or search(conn, question, exclude_prefixes=drop))
     if not results and not client_excerpt:
+        if not spec.allow_product_index:
+            return f"The {room} room does not answer from the product index.", []
         return "Nothing indexed yet. Run:  python ingest.py", []
 
     as_of = parse_as_of(question)
@@ -49,14 +66,12 @@ def answer(conn, question, history=None, client_excerpt="", room="fa"):
             + client_excerpt[:12000]
             + "\n"
         )
-    room = (room or "fa").lower()
-    doctrine = DOCTRINE.get(room, DOCTRINE["fa"])
     think_block = ""
     if os.environ.get("FORTITUDO_THINK", "").strip() in {"1", "true", "yes"}:
         thought = think(room, question, context + "\n" + (client_excerpt or ""))
         think_block = as_prompt_block(thought) + "\n"
     user = (
-        f"{doctrine}\n\n{ANSWER_SHAPE}\n\n{think_block}{prior}"
+        f"{ANSWER_SHAPE}\n\n{think_block}{prior}"
         f"Product-guide extracts (as_of={as_of}, intent={intent}):\n\n{context}\n"
         f"{client_block}"
         f"---\n\nAdviser's question: {question}\n\n"
@@ -64,8 +79,11 @@ def answer(conn, question, history=None, client_excerpt="", room="fa"):
         "If a fact is from a client file, name the file. "
         "If the extracts do not contain the answer, say so. Do not invent."
     )
-    raw = chat(SYSTEM_PROMPT, user)
+    # The room's own standard and refusal, not one generic prompt for the desk.
+    raw = chat(expert_system(room), user)
     grounded, _missing = span_check(raw, context + "\n" + (client_excerpt or ""))
+    if spec.draft_banner and not grounded.lstrip().startswith(spec.draft_banner.strip()):
+        grounded = spec.draft_banner + grounded
     return grounded, results
 
 

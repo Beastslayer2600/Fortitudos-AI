@@ -11,14 +11,56 @@ from typing import List
 
 from reason import DOCTRINE
 
-ROOM_HINTS = [
-    ("roa", re.compile(r"\b(roa draft|suitability draft|draft (a |the )?record of advice)\b", re.I)),
-    ("drama", re.compile(r"\b(eisteddfod|adjudicat|rubric|drama syllabus|monologue)\b", re.I)),
-    ("craft", re.compile(r"\b(website|mockup|shop page|flyer|qr|storefront|plumber|salon|craft)\b", re.I)),
-    ("voice", re.compile(r"\b(instagram|caption|carousel|voice note|shame|money psycholog)\b", re.I)),
-    ("learn", re.compile(r"\b(teach the desk|file this rule|learn this|doctrine)\b", re.I)),
-    ("fa", re.compile(r"\b(waiting period|survival|severity|exclusion|premium|lifestyle protector|liberty)\b", re.I)),
-]
+# Two weights. INTENT is what the adviser is asking the desk to *do* — the
+# reliable signal. TOPIC is vocabulary that often appears in a room's work but
+# also turns up incidentally: a client can be a plumber, and a severity benefit
+# can belong to a web designer. First-match-wins on a single ordered list sent
+# both of those product questions to Craft.
+INTENT = {
+    "roa": [r"\b(roa draft|suitability draft|draft (a |the )?record of advice|draft an? roa)\b"],
+    "drama": [r"\b(adjudicat\w*|mark this|show the rubric|draft a comment for)\b"],
+    "craft": [
+        r"\b(build|make|draft|design|mock up|mockup|print)\b[^.?!]{0,40}"
+        r"\b(page|site|website|storefront|flyer|poster|letter|qr)\b",
+        r"\b(shop page|trade page|door letter|walk-?in pack)\b",
+    ],
+    "voice": [r"\b(write|draft|post)\b[^.?!]{0,30}\b(caption|carousel|instagram|linkedin|status)\b"],
+    "learn": [r"\b(teach the desk|file this rule|learn this|remember this rule)\b"],
+    "fa": [r"\b(what|which|how|does|is|are)\b[^.?!]{0,60}\b(waiting period|survival|severity|exclusion|premium|benefit)\b"],
+}
+
+TOPIC = {
+    "roa": [r"\brecord of advice\b", r"\bsuitability\b"],
+    "drama": [r"\b(eisteddfod|rubric|drama syllabus|monologue)\b"],
+    "craft": [r"\b(flyer|qr code|storefront|shop front|walk-?in)\b"],
+    "voice": [r"\b(instagram|caption|carousel|money psycholog\w*|money shame)\b"],
+    "learn": [r"\bdoctrine\b"],
+    "fa": [
+        r"\b(waiting period|survival period|severity|exclusion|premium|"
+        r"lifestyle protector|liberty|policy wording|benefit)\b",
+    ],
+}
+
+INTENT_WEIGHT = 3
+TOPIC_WEIGHT = 1
+
+# Ties go to the room that constrains the answer most. Craft is last: it is the
+# only room with no citation duty, so it must be *won*, never fallen into.
+PRECEDENCE = ["roa", "fa", "drama", "learn", "voice", "craft"]
+
+_INTENT_RE = {r: [re.compile(p, re.I) for p in pats] for r, pats in INTENT.items()}
+_TOPIC_RE = {r: [re.compile(p, re.I) for p in pats] for r, pats in TOPIC.items()}
+
+
+def score_rooms(text: str):
+    """Weighted score per room. Intent beats vocabulary."""
+    blob = text or ""
+    scores = {}
+    for room in PRECEDENCE:
+        hits = sum(INTENT_WEIGHT for p in _INTENT_RE.get(room, []) if p.search(blob))
+        hits += sum(TOPIC_WEIGHT for p in _TOPIC_RE.get(room, []) if p.search(blob))
+        scores[room] = hits
+    return scores
 
 
 @dataclass(frozen=True)
@@ -61,22 +103,29 @@ STANDARD = {
 def classify(text: str, hinted_room: str = "") -> Route:
     if hinted_room and hinted_room.lower() in STANDARD:
         room = hinted_room.lower()
-        why = f"room set by the desk ({room})"
-    else:
+        return Route(room, f"room set by the desk ({room})", REFUSE[room], STANDARD[room], TOOLS[room])
+
+    blob = text or ""
+    scores = score_rooms(blob)
+    best = max(scores.values())
+    if best == 0:
         room, why = "fa", "default Advisor — product wording"
-        blob = text or ""
-        for rid, pat in ROOM_HINTS:
-            if pat.search(blob):
-                room, why = rid, f"matched {rid} language"
-                break
-        if room == "craft":
-            try:
-                from crossover import refuse_reason
-                extra = refuse_reason(blob)
-                if extra:
-                    return Route("fa", why + "; client file", extra, STANDARD["fa"], TOOLS["fa"])
-            except Exception:
-                pass
+    else:
+        room = next(r for r in PRECEDENCE if scores[r] == best)
+        tied = [r for r in PRECEDENCE if scores[r] == best]
+        why = f"matched {room} language (score {best})"
+        if len(tied) > 1:
+            why += f"; tie with {', '.join(t for t in tied if t != room)} went to the stricter room"
+
+    if room == "craft":
+        # Craft may edit the practice storefront, never a client matter.
+        try:
+            from crossover import refuse_reason
+            extra = refuse_reason(blob)
+            if extra:
+                return Route("fa", why + "; client file", extra, STANDARD["fa"], TOOLS["fa"])
+        except Exception:
+            pass
     return Route(room, why, REFUSE[room], STANDARD[room], TOOLS[room])
 
 

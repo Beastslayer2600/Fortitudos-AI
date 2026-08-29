@@ -1,6 +1,6 @@
 """Pick trade page vs wealth storefront. Client files never become a site."""
 from crossover import kind_of, refuse_reason
-from trade_page import generate_trade_page
+from design_reason import design_and_render
 from website_mockup import generate_mockup
 
 
@@ -13,7 +13,10 @@ def generate_from_client_documents(client_name: str, source_text: str, extra_bri
         raise ValueError(refuse)
     kind = kind_of(blob)
     if kind == "trade":
-        return generate_trade_page(client_name, blob)
+        # Through the design reasoner, not the bare renderer: it decides the
+        # headline, intent and what to omit, and falls back to a deterministic
+        # spec when no model is running.
+        return design_and_render(client_name, blob)["page"]
     brief = (
         f"Create a professional one-page website mockup for: {client_name}.\n"
         f"{extra_brief}\n"

@@ -14,11 +14,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
 import client_store
+import expert_route
+import rooms
 import store
 import sort_engine
 from ingest import extract_any
 from retrieval import build_context, corpus_exclusions, search
-from config import CHAT_MODEL, EMBED_MODEL, SYSTEM_PROMPT, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_DIR
+from config import CHAT_MODEL, EMBED_MODEL, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_DIR
 from llm import OllamaError, chat, has_model, health
 import website_mockup
 
@@ -534,29 +536,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True, "pages": count})
             if parts == ["api", "projection"]:
                 return self.send_json(projection(body))
+            if parts == ["api", "route"]:
+                route = expert_route.classify(
+                    str(body.get("question", "")), hinted_room=str(body.get("room", "")),
+                )
+                return self.send_json({
+                    "room": route.room, "why": route.why, "standard": route.standard,
+                    "refuse": route.refuse, "tools": route.tools,
+                })
             if parts == ["api", "ask"]:
                 question = str(body.get("question", "")).strip()
                 if not question or len(question) > 2000:
                     raise ValueError("Enter a question up to 2,000 characters.")
                 conn = store.connect()
-                room = str(body.get("room", "fa"))
-                results = search(conn, question, exclude_prefixes=corpus_exclusions(room))
-                if body.get("show_only"):
-                    pages = []
-                    for (rid, source, page, text, _emb), score in results:
-                        pages.append({
-                            "source": source,
-                            "page": page,
-                            "score": round(score, 3),
-                            "snippet": text[:1500],
-                        })
-                    return self.send_json({"show_only": True, "pages": pages, "sources": [
-                        {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3)} for r in results
-                    ]})
-                # Same path as the CLI: history rewriting, room doctrine, the
-                # client-file block and the span check that strips a figure the
-                # retrieved pages do not support.
-                import ask as ask_module
 
                 excerpt = ""
                 client_id = str(body.get("client_id", "")).strip()
@@ -568,13 +560,40 @@ class Handler(BaseHTTPRequestHandler):
                         excerpt = client_source_text(client)
                     except ValueError:
                         excerpt = ""  # nothing readable filed yet — answer without it
+
+                hinted = str(body.get("room", "")).strip()
+                route = expert_route.classify(question, hinted_room=hinted)
+                room, why = route.room, route.why
+                # Selecting a client makes this a client-aware job, and fa is not
+                # a client-aware room. Only promote when the desk did not choose.
+                if excerpt and room == "fa" and not hinted:
+                    room, why = "roa", why + "; client attached"
+                spec = rooms.get_room(room)
+
+                if body.get("show_only"):
+                    results = search(conn, question, exclude_prefixes=corpus_exclusions(room))
+                    return self.send_json({"show_only": True, "room": room, "pages": [
+                        {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3),
+                         "snippet": r[0][3][:1500]} for r in results
+                    ], "sources": [
+                        {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3)} for r in results
+                    ]})
+
+                # Same path as the CLI: history rewriting, the room's own standard
+                # and refusal, the client-file block, and the span check that
+                # strips a figure the retrieved pages do not support.
+                import ask as ask_module
+
                 history = body.get("history") if isinstance(body.get("history"), list) else []
                 text, results = ask_module.answer(
                     conn, question, history=history, client_excerpt=excerpt, room=room,
                 )
                 return self.send_json({
                     "answer": text,
-                    "used_client_files": bool(excerpt),
+                    "room": room,
+                    "why": why,
+                    "refuse": route.refuse,
+                    "used_client_files": bool(excerpt) and spec.include_clients,
                     "sources": [
                         {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3)}
                         for r in results

@@ -215,5 +215,70 @@ class VaultBoundary(unittest.TestCase):
             app.json_body(handler)
 
 
+
+class DeepRouting(unittest.TestCase):
+    """The room decides the corpus, not the caller."""
+
+    def test_a_room_without_the_product_index_does_not_search(self):
+        import ask
+        for room in ("craft", "voice", "drama", "learn"):
+            text, results = ask.answer(None, "anything", room=room)
+            self.assertIn("does not answer from the product index", text, room)
+            self.assertEqual(results, [], room)
+
+    def test_a_room_that_is_not_client_aware_drops_the_excerpt(self):
+        import ask, rooms
+        self.assertFalse(rooms.get_room("fa").include_clients)
+        self.assertTrue(rooms.get_room("roa").include_clients)
+        # fa is not client-aware, so an excerpt alone must not produce an answer.
+        text, _ = ask.answer(None, "q", client_excerpt="SECRET CLIENT TEXT", room="craft")
+        self.assertNotIn("SECRET", text)
+
+    def test_the_roa_room_carries_the_draft_banner(self):
+        import rooms
+        self.assertIn("INTERNAL DRAFT", rooms.get_room("roa").draft_banner)
+        self.assertEqual(rooms.get_room("fa").draft_banner, "")
+
+
+class RouteEndpoint(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def test_route_explains_the_room_it_picked(self):
+        status, _, payload = request(
+            self.server, "/api/route", "POST",
+            {"question": "Build a shop page for Joe Plumbing"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["room"], "craft")
+        self.assertTrue(payload["why"])
+        self.assertTrue(payload["refuse"])
+
+    def test_a_client_file_brief_falls_back_to_the_adviser_room(self):
+        _, _, payload = request(
+            self.server, "/api/route", "POST",
+            {"question": "Build a site from this FNA and policy number"},
+        )
+        self.assertEqual(payload["room"], "fa")
+        self.assertIn("client file", payload["why"])
+
+    def test_ask_reports_the_room_and_declines_outside_it(self):
+        _, _, payload = request(
+            self.server, "/api/ask", "POST",
+            {"question": "Design a flyer with a QR code"},
+        )
+        self.assertEqual(payload["room"], "craft")
+        self.assertFalse(payload["used_client_files"])
+        self.assertIn("does not answer from the product index", payload["answer"])
+
+
 if __name__ == "__main__":
     unittest.main()
