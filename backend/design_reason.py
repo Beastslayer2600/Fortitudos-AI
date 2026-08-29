@@ -2,6 +2,7 @@
 
 The model thinks like a local conversion designer.
 It emits a spec. The renderer paints HTML. Nothing invented.
+Lessons filed in Learn → Craft are prepended to the doctrine.
 """
 from __future__ import annotations
 
@@ -17,19 +18,20 @@ DOCTRINE = Path(__file__).resolve().parent / "docs" / "craft_design_doctrine.md"
 SYSTEM = """You are Fortitudo Craft's design and marketing lead for one-page local shop sites in Gauteng.
 Output ONLY one JSON object. No markdown. No HTML. No hex codes. No fonts.
 
+Use the DOCTRINE and any LESSONS FILED IN LEARN as law.
 Think in this order, then fill the JSON:
 1. Intent — emergency (call now) or appointment (hours + place).
 2. Audience — one person, one suburb, one job.
-3. First screen — what they must see before they scroll: suburb, job, Call.
-4. Headline — job + suburb. Never a slogan ("quality you can trust").
+3. First screen — suburb, job, Call.
+4. Headline — job + suburb. Never a slogan.
 5. Proof — only what the brief actually contains.
-6. Omit — anything not supplied: hours, reviews, prices, second location.
-7. Flyer line — same job as the headline, short enough for A6.
+6. Omit — anything not supplied.
+7. Flyer line — same job as the headline.
 
-CTA rule: primary is Call, secondary is WhatsApp. Do not invent a Book Now form.
+CTA: Call first, WhatsApp second.
 Mood: industrial | warm | cool | lush.
-South African English. Grade 6. Short sentences.
-Never invent phone, hours, awards, 24/7, testimonials, client counts, or prices.
+South African English. Grade 6.
+Never invent phone, hours, awards, 24/7, testimonials, or prices.
 """
 
 
@@ -53,9 +55,17 @@ class DesignSpec:
 
 
 def _doctrine() -> str:
+    chunks = []
     if DOCTRINE.exists():
-        return DOCTRINE.read_text(encoding="utf-8")[:2200]
-    return ""
+        chunks.append(DOCTRINE.read_text(encoding="utf-8")[:2200])
+    try:
+        from learn_teach import craft_lessons_text
+        extra = craft_lessons_text(2000)
+        if extra:
+            chunks.append("LESSONS FILED IN LEARN (Craft):\n" + extra)
+    except Exception:
+        pass
+    return "\n\n".join(chunks)
 
 
 def _extract_json(text: str) -> dict:
@@ -138,45 +148,23 @@ def reason(facts: TradeFacts) -> DesignSpec:
 
 def apply_spec(facts: TradeFacts, spec: DesignSpec) -> TradeFacts:
     return TradeFacts(
-        name=facts.name,
-        city=facts.city,
-        trade=facts.trade,
-        phone=facts.phone,
-        hours="" if "HOURS" in spec.omit else facts.hours,
-        address=facts.address,
-        services=spec.services or facts.services,
-        note=facts.note,
-        photos=facts.photos,
+        name=facts.name, city=facts.city, trade=facts.trade, phone=facts.phone,
+        hours="" if "HOURS" in spec.omit else facts.hours, address=facts.address,
+        services=spec.services or facts.services, note=facts.note, photos=facts.photos,
     )
 
 
 def flyer_html(facts: TradeFacts, spec: DesignSpec, mock_url: str) -> str:
     from html import escape
-    q = (
-        "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data="
-        + __import__("urllib.parse").quote(mock_url, safe="")
-    )
+    q = "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=" + __import__("urllib.parse").quote(mock_url, safe="")
     public = mock_url.startswith("http") and "127.0.0.1" not in mock_url and "localhost" not in mock_url
     warn = "" if public else "<p class='warn'>This QR is not public. Host the mock before you print.</p>"
-    return f"""<!DOCTYPE html>
-<html lang="en-ZA"><head><meta charset="utf-8">
-<title>Flyer — {escape(facts.name)}</title>
-<style>
-@page {{ size: A6; margin: 10mm; }}
-body {{ font: 14px/1.4 system-ui,sans-serif; color:#111; }}
-h1 {{ font-size: 1.4rem; margin: 0 0 .4rem; }}
-.qr {{ width: 160px; height: 160px; }}
-.warn {{ color:#8a1f1f; font-size:.85rem; }}
-</style></head>
-<body>
-<p style="letter-spacing:.14em;text-transform:uppercase;font-size:.7rem">{escape(facts.city)} · {escape(spec.intent)}</p>
-<h1>{escape(facts.name)}</h1>
-<p>{escape(spec.flyer_line)}</p>
+    return f"""<!DOCTYPE html><html lang="en-ZA"><head><meta charset="utf-8"><title>Flyer — {escape(facts.name)}</title>
+<style>@page{{size:A6;margin:10mm}}body{{font:14px/1.4 system-ui,sans-serif}}h1{{font-size:1.4rem}}.qr{{width:160px;height:160px}}.warn{{color:#8a1f1f}}</style></head>
+<body><p style="letter-spacing:.14em;text-transform:uppercase;font-size:.7rem">{escape(facts.city)} · {escape(spec.intent)}</p>
+<h1>{escape(facts.name)}</h1><p>{escape(spec.flyer_line)}</p>
 <img class="qr" alt="QR" src="{escape(q)}">
-<p>Scan for the page we drafted. Call Gert · Fortitudo Studios · +27 77 386 6299</p>
-{warn}
-</body></html>
-"""
+<p>Scan for the page we drafted. Call Gert · Fortitudo Studios · +27 77 386 6299</p>{warn}</body></html>"""
 
 
 def design_and_render(name: str, source_text: str, city: str = "Kempton Park", mock_url: str = "") -> dict:
@@ -184,17 +172,7 @@ def design_and_render(name: str, source_text: str, city: str = "Kempton Park", m
     spec = reason(facts)
     painted = apply_spec(facts, spec)
     page = render_trade_html(painted, include_sku=False)
-    page = page.replace(
-        f"<h1>{_esc_safe(_headline(facts))}</h1>",
-        f"<h1>{_esc_safe(spec.headline)}</h1>",
-        1,
-    )
-    if spec.seo_title:
-        page = page.replace(
-            f"<title>{_esc_safe(facts.name)}",
-            f"<title>{_esc_safe(spec.seo_title)}",
-            1,
-        )
+    page = page.replace(f"<h1>{_esc_safe(_headline(facts))}</h1>", f"<h1>{_esc_safe(spec.headline)}</h1>", 1)
     flyer = flyer_html(facts, spec, mock_url or "https://fortitudostudios.site/m/preview")
     return {"spec": asdict(spec), "page": page, "flyer": flyer, "missing": spec.missing}
 
@@ -205,7 +183,7 @@ def _esc_safe(s: str) -> str:
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="Reason a Craft page + flyer")
+    ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
     ap.add_argument("--city", default="Kempton Park")
     ap.add_argument("--facts", default="")
