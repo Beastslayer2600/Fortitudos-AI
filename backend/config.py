@@ -6,6 +6,7 @@ CHUNK settings or EMBED_MODEL.
 Environment overrides (optional):
   FORTITUDO_CHAT_MODEL, FORTITUDO_EMBED_MODEL, FORTITUDO_OLLAMA_HOST
   FORTITUDO_CLIENT_DATA_DIR, FORTITUDO_DROP_ZONE, FORTITUDO_REVIEW_ZONE
+  FORTITUDO_DATA_ROOT, FORTITUDO_PUBLIC_BASE
 """
 import os
 from pathlib import Path
@@ -25,6 +26,15 @@ DATA_ROOT = Path(
     os.environ.get("FORTITUDO_DATA_ROOT")
     or (r"C:\FortitudoData" if os.name == "nt" else Path.home() / "FortitudoData")
 )
+
+# Published Craft mockups. These are the only files this server hands to an
+# unauthenticated caller, so they sit in their own directory well away from
+# the client vault.
+MOCKS_DIR = DATA_ROOT / "mocks"
+
+# What the pamphlet QR points at. Leave it local and design_reason's flyer
+# prints its own "this QR is not public" warning until you set a real host.
+PUBLIC_BASE = os.environ.get("FORTITUDO_PUBLIC_BASE", "http://127.0.0.1:8000").rstrip("/")
 
 # ---------------------------------------------------------------- ollama
 OLLAMA_HOST = os.environ.get("FORTITUDO_OLLAMA_HOST") or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")

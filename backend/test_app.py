@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -385,6 +386,100 @@ class LeadgenAndClientsStaySeparate(unittest.TestCase):
     def test_the_unguarded_generator_is_gone(self):
         import website_mockup
         self.assertFalse(hasattr(website_mockup, "generate_from_client_documents"))
+
+
+
+class PublicMockPages(unittest.TestCase):
+    """/m/<slug> is the only thing this server hands to a stranger."""
+
+    def setUp(self):
+        import config, mockup_router
+        self.tmp = tempfile.TemporaryDirectory()
+        self._dir = config.MOCKS_DIR
+        config.MOCKS_DIR = mockup_router.MOCKS_DIR = Path(self.tmp.name) / "mocks"
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        import config, mockup_router
+        self.server.shutdown()
+        self.server.server_close()
+        config.MOCKS_DIR = mockup_router.MOCKS_DIR = self._dir
+        self.tmp.cleanup()
+
+    def publish(self, name="Joe Plumbing", brief="Geyser repairs Kempton Park 011 975 1234"):
+        return request(self.server, "/api/craft/publish", "POST",
+                       {"name": name, "brief": brief})
+
+    def test_publishing_serves_the_page_at_its_slug(self):
+        status, _, payload = self.publish()
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["slug"], "joe-plumbing")
+        url = f"http://127.0.0.1:{self.server.server_address[1]}/m/joe-plumbing"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("Joe Plumbing", resp.read().decode())
+
+    def test_the_flyer_qr_points_at_the_published_page(self):
+        _, _, payload = self.publish()
+        self.assertIn(urllib.parse.quote(payload["url"], safe=""), payload["flyer"])
+
+    def test_a_published_page_is_still_marked_a_mockup(self):
+        _, _, payload = self.publish()
+        self.assertIn("INTERNAL MOCKUP", payload["page"])
+        self.assertIn("noindex", payload["page"])
+
+    def test_only_a_plain_slug_resolves(self):
+        import mockup_router
+        for bad in ["../../../etc/passwd", "joe-plumbing.html", "Joe_Plumbing",
+                    "JOE-PLUMBING", "", "a" * 61, "joe plumbing"]:
+            self.assertIsNone(mockup_router.mock_path(bad), bad)
+        self.assertIsNotNone(mockup_router.mock_path("joe-plumbing"))
+
+    def test_the_public_route_cannot_reach_the_vault(self):
+        self.publish()
+        for bad in ["../../../../etc/passwd", "../clients/someone/file"]:
+            status, _, _ = request(self.server, f"/m/{bad}")
+            self.assertEqual(status, 404, bad)
+
+    def test_a_lead_brief_with_client_language_is_never_published(self):
+        status, _, _ = self.publish(brief="record of advice, id number 8001015009087")
+        self.assertEqual(status, 400)
+
+    def test_a_page_can_be_taken_down(self):
+        self.publish()
+        _, _, payload = request(self.server, "/api/craft/unpublish", "POST",
+                                {"slug": "joe-plumbing"})
+        self.assertTrue(payload["ok"])
+        status, _, _ = request(self.server, "/m/joe-plumbing")
+        self.assertEqual(status, 404)
+        _, _, payload = request(self.server, "/api/craft/unpublish", "POST",
+                                {"slug": "../../etc/passwd"})
+        self.assertFalse(payload["ok"])
+
+
+
+class ClientMockupsTakeABriefOnly(unittest.TestCase):
+    """The filed documents decide whether a mockup is allowed, never what it says."""
+
+    def test_no_client_document_text_reaches_the_generator(self):
+        import mockup_router
+        seen = {}
+        real = mockup_router.generate_mockup
+        mockup_router.generate_mockup = lambda brief, **kw: seen.update(
+            brief=brief, kwargs=kw) or "<html></html>"
+        try:
+            mockup_router.generate_for_client(
+                "Fortitudo Wealth",
+                "Practice storefront. Turnover was R4,200,000 and the secret code is HUSH.",
+                extra_brief="calm, one CTA",
+            )
+        finally:
+            mockup_router.generate_mockup = real
+        self.assertEqual(seen["kwargs"], {}, "no client_context may be passed")
+        self.assertNotIn("HUSH", seen["brief"])
+        self.assertNotIn("4,200,000", seen["brief"])
+        self.assertIn("calm, one CTA", seen["brief"])
 
 
 if __name__ == "__main__":

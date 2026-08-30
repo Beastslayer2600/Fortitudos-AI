@@ -23,7 +23,6 @@ from ingest import extract_any
 from retrieval import build_context, corpus_exclusions, search
 from config import CHAT_MODEL, EMBED_MODEL, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_DIR
 from llm import OllamaError, chat, has_model, health
-import website_mockup
 
 try:
     import pdfplumber  # noqa: F401
@@ -298,6 +297,22 @@ class Handler(BaseHTTPRequestHandler):
                 path = ROOT / "assets" / name
                 ctype = "image/svg+xml" if name.endswith(".svg") else "application/octet-stream"
                 return self.send_file(path, ctype)
+            if len(parts) == 2 and parts[0] == "m":
+                # The one public surface. Serves only from the mocks directory,
+                # by exact slug, and never touches the client vault.
+                import mockup_router
+
+                path = mockup_router.mock_path(parts[1])
+                if path is None or not path.exists():
+                    return self.send_json({"error": "Not found."}, 404)
+                body = path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("X-Robots-Tag", "noindex, nofollow")
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if parts == ["api", "status"]:
                 conn = store.connect()
                 try:
@@ -542,6 +557,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True, "pages": count})
             if parts == ["api", "projection"]:
                 return self.send_json(projection(body))
+            if parts == ["api", "craft", "publish"]:
+                import mockup_router
+                name = str(body.get("name", "")).strip()
+                if not name:
+                    raise ValueError("Name the shop.")
+                out = mockup_router.publish_lead_mock(
+                    name, str(body.get("brief", "")),
+                    str(body.get("city", "")).strip() or "Kempton Park",
+                )
+                return self.send_json({"ok": True, **out})
+            if parts == ["api", "craft", "unpublish"]:
+                import mockup_router
+                slug = str(body.get("slug", "")).strip()
+                return self.send_json({"ok": mockup_router.unpublish(slug)})
             if parts == ["api", "craft", "mock"]:
                 import mockup_router
                 name = str(body.get("name", "")).strip()
