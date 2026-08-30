@@ -24,7 +24,7 @@ from pathlib import Path
 import client_store
 from ingest import extract_any
 from llm import chat
-from config import CHAT_MODEL, DATA_ROOT
+from config import DATA_ROOT
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
