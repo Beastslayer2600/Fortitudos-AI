@@ -10,11 +10,18 @@ class Fallback(unittest.TestCase):
         painted = apply_spec(f, s)
         self.assertEqual(painted.hours, "")
 
-    def test_flyer_warns_localhost(self):
+    def test_flyer_blocks_localhost_qr(self):
         f = TradeFacts(name="Joe", city="Kempton Park", trade="plumb")
         s = fallback_spec(f)
         html = flyer_html(f, s, "http://127.0.0.1:5173/craft")
-        self.assertIn("not public", html)
+        self.assertNotIn("qrserver", html)
+        self.assertIn("Do not print", html)
+
+    def test_flyer_public_has_qr(self):
+        f = TradeFacts(name="Joe", city="Kempton Park", trade="plumb")
+        s = fallback_spec(f)
+        html = flyer_html(f, s, "https://fortitudostudios.site/m/joe")
+        self.assertIn("qrserver", html)
 
 if __name__ == "__main__":
     unittest.main()
