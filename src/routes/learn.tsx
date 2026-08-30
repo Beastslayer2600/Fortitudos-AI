@@ -12,7 +12,8 @@ function LearnPage() {
   const [tab, setTab] = useState<"teach" | "files" | "discover">("teach");
   const [pasteTitle, setPasteTitle] = useState("");
   const [pasteText, setPasteText] = useState("");
-  const [alsoResearch, setAlsoResearch] = useState(true);
+  const [alsoResearch, setAlsoResearch] = useState(false);
+  const [applies, setApplies] = useState<"craft" | "advisor" | "voice" | "drama" | "all">("craft");
   const [homeUrl, setHomeUrl] = useState("");
   const [gaps, setGaps] = useState<{ title: string; branch: string; have: boolean }[]>([]);
 
@@ -55,11 +56,18 @@ function LearnPage() {
       </div>
       {tab === "teach" && (
         <>
-          <form className="mt-6 space-y-3 rounded-xl border border-border bg-surface p-5" onSubmit={(e) => { e.preventDefault(); void (async () => { setBusy(true); try { await deskApi.teach(pasteTitle || "Lesson", pasteText, alsoResearch); setPasteText(""); await refresh(); } catch (err) { setStatus(err instanceof Error ? err.message : "Teach failed"); } finally { setBusy(false); } })(); }}>
-            <p className="text-sm">Tell it what to learn. Filed for Advisor, Studio and Craft.</p>
+          <form className="mt-6 space-y-3 rounded-xl border border-border bg-surface p-5" onSubmit={(e) => { e.preventDefault(); void (async () => { setBusy(true); try { await deskApi.teach(pasteTitle || "Lesson", pasteText, alsoResearch, applies); setPasteText(""); await refresh(); } catch (err) { setStatus(err instanceof Error ? err.message : "Teach failed"); } finally { setBusy(false); } })(); }}>
+            <p className="text-sm">File a rule for one room. Craft lessons feed the page designer. Advisor lessons stay out of plumber pages.</p>
             <input className="h-11 w-full rounded-md border border-border bg-transparent px-3 text-sm" placeholder="Topic" value={pasteTitle} onChange={(e) => setPasteTitle(e.target.value)} />
-            <textarea className="min-h-32 w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm" placeholder="Rules, voice, examples — or leave blank and research." value={pasteText} onChange={(e) => setPasteText(e.target.value)} />
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={alsoResearch} onChange={(e) => setAlsoResearch(e.target.checked)} /> Research after filing</label>
+            <select className="h-11 w-full rounded-md border border-border bg-transparent px-3 text-sm" value={applies} onChange={(e) => setApplies(e.target.value as typeof applies)}>
+              <option value="craft">Applies to: Craft</option>
+              <option value="advisor">Applies to: Advisor</option>
+              <option value="voice">Applies to: Voice</option>
+              <option value="drama">Applies to: Drama</option>
+              <option value="all">Applies to: all rooms</option>
+            </select>
+            <textarea className="min-h-32 w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm" placeholder="The rule. Short. Example. What it must never do." value={pasteText} onChange={(e) => setPasteText(e.target.value)} />
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={alsoResearch} onChange={(e) => setAlsoResearch(e.target.checked)} /> Research after filing (off — file the rule yourself)</label>
             <button type="submit" className="h-11 rounded-md bg-accent px-4 text-sm text-accent-fg" disabled={busy}>Learn this</button>
           </form>
           <div className="mt-6"><SightDrop /></div>

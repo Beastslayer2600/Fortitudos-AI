@@ -57,8 +57,8 @@ export const deskApi = {
     }),
   ingestGuide: (filename: string, contentBase64: string, topic = "misc") =>
     json<{ ok: boolean; pages: number; topic?: string; source?: string }>("/api/ingest/guides", { method: "POST", body: JSON.stringify({ filename, content_base64: contentBase64, topic }) }),
-  teach: (title: string, text: string, research = false) =>
-    json<{ ok: boolean; pages: number; source?: string; researched?: { title?: string } | null }>("/api/learn/teach", { method: "POST", body: JSON.stringify({ title, text, research }) }),
+  teach: (title: string, text: string, research = false, applies = "craft") =>
+    json<{ ok: boolean; pages: number; source?: string; researched?: { title?: string } | null }>("/api/learn/teach", { method: "POST", body: JSON.stringify({ title, text, research, applies }) }),
   ingestPaste: (title: string, text: string) =>
     json<{ ok: boolean; pages: number; source?: string; branches?: string[] }>("/api/ingest/paste", { method: "POST", body: JSON.stringify({ title, text }) }),
   ingestClients: () => json<{ ok: boolean; pages: number }>("/api/ingest/clients", { method: "POST", body: JSON.stringify({}) }),
@@ -66,7 +66,11 @@ export const deskApi = {
   route: (question: string, room?: string) =>
     json<{ room: string; why: string; standard: string; refuse: string; tools: string[] }>("/api/route", { method: "POST", body: JSON.stringify({ question, room: room || "" }) }),
   ask: (question: string, history: { role: string; content: string }[], clientId?: string, room?: string) =>
-    json<{ answer: string; room: string; why: string; refuse: string; sources: { source: string; page: number; score: number }[]; used_client_files: boolean }>("/api/ask", { method: "POST", body: JSON.stringify({ question, history, client_id: clientId || "", room: room || "" }) }),
+    json<{ answer: string; room: string; why: string; standard: string; refuse: string; sources: { source: string; page: number; score: number }[]; used_client_files: boolean }>("/api/ask", { method: "POST", body: JSON.stringify({ question, history, client_id: clientId || "", room: room || "" }) }),
+  craftPage: (input: { name: string; city?: string; facts: string; url?: string }) =>
+    json<{ ok: boolean; slug: string; path: string; spec: Record<string, unknown>; missing: string[] }>("/api/craft/page", { method: "POST", body: JSON.stringify(input) }),
+  consent: (identifier: string, action = "check") =>
+    json<{ allowed: boolean; kind: string; reason: string; state: string }>("/api/consent", { method: "POST", body: JSON.stringify({ identifier, action }) }),
   fileClientDoc: (clientId: string, filename: string, contentBase64: string, docType = "Other") =>
     json<{ path: string }>(`/api/clients/${encodeURIComponent(clientId)}/documents`, { method: "POST", body: JSON.stringify({ filename, content_base64: contentBase64, doc_type: docType }) }),
 };

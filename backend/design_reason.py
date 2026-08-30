@@ -1,9 +1,4 @@
-"""Design reasoning for Craft pages.
-
-The model thinks like a local conversion designer.
-It emits a spec. The renderer paints HTML. Nothing invented.
-Lessons filed in Learn → Craft are prepended to the doctrine.
-"""
+"""Design reasoning for Craft pages."""
 from __future__ import annotations
 
 import json
@@ -18,21 +13,9 @@ DOCTRINE = Path(__file__).resolve().parent / "docs" / "craft_design_doctrine.md"
 
 SYSTEM = """You are Fortitudo Craft's design and marketing lead for one-page local shop sites in Gauteng.
 Output ONLY one JSON object. No markdown. No HTML. No hex codes. No fonts.
-
 Use the DOCTRINE and any LESSONS FILED IN LEARN as law.
-Think in this order, then fill the JSON:
-1. Intent — emergency (call now) or appointment (hours + place).
-2. Audience — one person, one suburb, one job.
-3. First screen — suburb, job, Call.
-4. Headline — job + suburb. Never a slogan.
-5. Proof — only what the brief actually contains.
-6. Omit — anything not supplied.
-7. Flyer line — same job as the headline.
-
-CTA: Call first, WhatsApp second.
-Mood: industrial | warm | cool | lush.
-South African English. Grade 6.
-Never invent phone, hours, awards, 24/7, testimonials, or prices.
+Think: intent, audience, first screen, headline job+suburb, omit missing facts, flyer line.
+CTA: Call first. Never invent phone, hours, awards, 24/7, testimonials, or prices.
 """
 
 
@@ -157,15 +140,28 @@ def apply_spec(facts: TradeFacts, spec: DesignSpec) -> TradeFacts:
 
 def flyer_html(facts: TradeFacts, spec: DesignSpec, mock_url: str) -> str:
     from html import escape
-    q = "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=" + quote(mock_url, safe="")
-    public = mock_url.startswith("http") and "127.0.0.1" not in mock_url and "localhost" not in mock_url
-    warn = "" if public else "<p class='warn'>This QR is not public. Host the mock before you print.</p>"
-    return f"""<!DOCTYPE html><html lang="en-ZA"><head><meta charset="utf-8"><title>Flyer — {escape(facts.name)}</title>
-<style>@page{{size:A6;margin:10mm}}body{{font:14px/1.4 system-ui,sans-serif}}h1{{font-size:1.4rem}}.qr{{width:160px;height:160px}}.warn{{color:#8a1f1f}}</style></head>
-<body><p style="letter-spacing:.14em;text-transform:uppercase;font-size:.7rem">{escape(facts.city)} · {escape(spec.intent)}</p>
-<h1>{escape(facts.name)}</h1><p>{escape(spec.flyer_line)}</p>
-<img class="qr" alt="QR" src="{escape(q)}">
-<p>Scan for the page we drafted. Call Gert · Fortitudo Studios · +27 77 386 6299</p>{warn}</body></html>"""
+    public = (
+        mock_url.startswith("http")
+        and "127.0.0.1" not in mock_url
+        and "localhost" not in mock_url
+    )
+    if public:
+        q = "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=" + quote(mock_url, safe="")
+        media = f'<img class="qr" alt="QR" src="{escape(q)}">'
+        warn = ""
+    else:
+        media = f"<p><strong>Do not print a QR yet.</strong><br>Host the page, then set FORTITUDO_PUBLIC_BASE.</p><p>{escape(mock_url or '(no public URL)')}</p>"
+        warn = "<p class='warn'>Localhost QR is disabled. It would die off your Wi-Fi.</p>"
+    return (
+        "<!DOCTYPE html><html lang=\"en-ZA\"><head><meta charset=\"utf-8\">"
+        f"<title>Flyer — {escape(facts.name)}</title>"
+        "<style>@page{size:A6;margin:10mm}body{font:14px/1.4 system-ui,sans-serif}"
+        "h1{font-size:1.4rem}.qr{width:160px;height:160px}.warn{color:#8a1f1f}</style></head><body>"
+        f"<p style=\"letter-spacing:.14em;text-transform:uppercase;font-size:.7rem\">{escape(facts.city)} · {escape(spec.intent)}</p>"
+        f"<h1>{escape(facts.name)}</h1><p>{escape(spec.flyer_line)}</p>{media}"
+        "<p>Call Gert · Fortitudo Studios · +27 77 386 6299</p>"
+        f"{warn}</body></html>"
+    )
 
 
 def design_and_render(name: str, source_text: str, city: str = "Kempton Park", mock_url: str = "") -> dict:
@@ -174,7 +170,7 @@ def design_and_render(name: str, source_text: str, city: str = "Kempton Park", m
     painted = apply_spec(facts, spec)
     page = render_trade_html(painted, include_sku=False)
     page = page.replace(f"<h1>{_esc_safe(_headline(facts))}</h1>", f"<h1>{_esc_safe(spec.headline)}</h1>", 1)
-    flyer = flyer_html(facts, spec, mock_url or "https://fortitudostudios.site/m/preview")
+    flyer = flyer_html(facts, spec, mock_url)
     return {"spec": asdict(spec), "page": page, "flyer": flyer, "missing": spec.missing}
 
 

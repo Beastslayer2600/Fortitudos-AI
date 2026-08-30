@@ -1,16 +1,11 @@
-"""
-Fortitudo AI - storage layer
-
-Deliberately boring: sqlite + numpy. No vector database, no Docker, no
-services to keep running. A few thousand pages brute-forces in milliseconds
-and you can open the .db in any sqlite viewer to see exactly what is indexed.
-"""
+"""sqlite page index. As-of columns migrate in place."""
 import os
 import sqlite3
-from typing import List, Tuple, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from config import DB_PATH, DATA_DIR
+from versioning import guess_meta_from_name, sha256_text
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pages (
@@ -19,6 +14,10 @@ CREATE TABLE IF NOT EXISTS pages (
     page      INTEGER NOT NULL,
     text      TEXT NOT NULL,
     embedding BLOB NOT NULL,
+    content_hash TEXT DEFAULT '',
+    effective_from TEXT DEFAULT '',
+    effective_to TEXT DEFAULT '',
+    domain TEXT DEFAULT '',
     UNIQUE(source, page)
 );
 CREATE INDEX IF NOT EXISTS idx_source ON pages(source);
@@ -32,25 +31,35 @@ CREATE TABLE IF NOT EXISTS source_meta (
 );
 """
 
-# In-memory cache for the vector matrix to avoid redundant SQLite BLOB decoding
-# and normalization on every search query.
 _CACHE: Optional[Tuple[List[Any], np.ndarray]] = None
 _CACHE_MTIME: float = 0
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(pages)").fetchall()}
+    for name, ddl in (
+        ("content_hash", "TEXT DEFAULT ''"),
+        ("effective_from", "TEXT DEFAULT ''"),
+        ("effective_to", "TEXT DEFAULT ''"),
+        ("domain", "TEXT DEFAULT ''"),
+    ):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE pages ADD COLUMN {name} {ddl}")
+    conn.commit()
 
 
 def connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
 
 
 def clear_source(conn: sqlite3.Connection, source: str):
-    """Remove an existing document so it can be re-ingested cleanly."""
     conn.execute("DELETE FROM pages WHERE source = ?", (source,))
     conn.execute("DELETE FROM source_meta WHERE source = ?", (source,))
     conn.commit()
-    # Invalidate cache
     global _CACHE
     _CACHE = None
 
@@ -71,46 +80,75 @@ def get_source_meta(conn: sqlite3.Connection, source: str) -> Optional[Tuple[flo
     return (row[0], row[1], row[2]) if row else None
 
 
-def add_page(conn: sqlite3.Connection, source: str, page: int, text: str, embedding: Any):
+def _domain_of(source: str) -> str:
+    s = source or ""
+    if s.startswith(("learn:craft", "guide:craft")) or "/craft/" in s:
+        return "craft"
+    if s.startswith(("learn:voice",)):
+        return "voice"
+    if s.startswith(("learn:drama", "drama:")):
+        return "drama"
+    if s.startswith("client:"):
+        return "client"
+    if s.startswith("learn:"):
+        return "learn"
+    return "fa"
+
+
+def add_page(
+    conn: sqlite3.Connection,
+    source: str,
+    page: int,
+    text: str,
+    embedding: Any,
+    effective_from: str = "",
+    effective_to: str = "",
+    domain: str = "",
+):
+    guessed = guess_meta_from_name(source)
     vec = np.asarray(embedding, dtype=np.float32)
     conn.execute(
-        "INSERT OR REPLACE INTO pages (source, page, text, embedding) "
-        "VALUES (?, ?, ?, ?)",
-        (source, page, text, vec.tobytes()),
+        "INSERT OR REPLACE INTO pages "
+        "(source, page, text, embedding, content_hash, effective_from, effective_to, domain) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            source,
+            page,
+            text,
+            vec.tobytes(),
+            sha256_text(text),
+            effective_from or guessed.get("effective_from") or "",
+            effective_to or guessed.get("effective_to") or "",
+            domain or _domain_of(source),
+        ),
     )
-    # Cache will be refreshed on next load_all due to DB file mtime change
+
+
+def page_meta(conn: sqlite3.Connection) -> Dict[int, Tuple[str, str, str]]:
+    """id -> (effective_from, effective_to, domain)"""
+    _migrate(conn)
+    out = {}
+    for row in conn.execute("SELECT id, effective_from, effective_to, domain FROM pages"):
+        out[row[0]] = (row[1] or "", row[2] or "", row[3] or "")
+    return out
 
 
 def load_all(conn: sqlite3.Connection) -> Tuple[List[Any], np.ndarray]:
-    """Return (rows, matrix) where matrix is L2-normalised for cosine.
-    Uses an in-memory cache that refreshes if the database file changes.
-    """
     global _CACHE, _CACHE_MTIME
-
     try:
         mtime = os.path.getmtime(DB_PATH)
     except OSError:
         mtime = 0
-
     if _CACHE is not None and mtime <= _CACHE_MTIME:
         return _CACHE
-
-    rows = conn.execute(
-        "SELECT id, source, page, text, embedding FROM pages"
-    ).fetchall()
-
+    rows = conn.execute("SELECT id, source, page, text, embedding FROM pages").fetchall()
     if not rows:
         _CACHE = ([], np.zeros((0, 0), dtype=np.float32))
         _CACHE_MTIME = mtime
         return _CACHE
-
-    # Decode BLOBs and stack into a matrix
     vecs = np.stack([np.frombuffer(r[4], dtype=np.float32) for r in rows])
-
-    # L2 normalize for cosine similarity via dot product
     norms = np.linalg.norm(vecs, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
-
     _CACHE = (rows, vecs / norms)
     _CACHE_MTIME = mtime
     return _CACHE

@@ -1,4 +1,4 @@
-"""Fortitudo AI - ask. Grounded answer in the Advisor doctrine shape."""
+"""Fortitudo AI - ask. Grounded answer in the room doctrine shape."""
 import argparse
 import os
 import sys
@@ -10,7 +10,7 @@ from config import CHAT_MODEL, EMBED_MODEL
 from versioning import parse_as_of, query_intent, span_check
 from reason import ANSWER_SHAPE, as_prompt_block, think
 from rooms import get_room
-from expert_route import expert_system
+from expert_route import classify, expert_system
 
 
 def rewrite_query(question, history=None):
@@ -23,32 +23,54 @@ def rewrite_query(question, history=None):
     return f"{question}\n{' '.join(parts)}"[:1500]
 
 
-def answer(conn, question, history=None, client_excerpt="", room="fa"):
+def _keep_source(room: str, source: str) -> bool:
+    """The shelves a room may quote, on top of corpus_exclusions.
+
+    corpus_exclusions drops machine-written sources before ranking so the good
+    pages win the top-k slots; this narrows what is left to the room's own
+    shelf.
+    """
+    src = str(source or "")
+    if room == "fa":
+        return not src.startswith(("learn:craft", "learn:voice", "learn:drama", "client:"))
+    if room == "craft":
+        return src.startswith(("learn:craft", "learn:all", "guide:")) or "craft" in src.lower()
+    if room == "voice":
+        return src.startswith(("learn:voice", "learn:all"))
+    if room == "drama":
+        return src.startswith(("learn:drama", "drama:"))
+    return True
+
+
+def answer(conn, question, history=None, client_excerpt="", room=""):
     """Answer in one room, under that room's corpus rules.
 
-    rooms.py decides what the room may read: whether the product index is in
-    scope at all, and whether filed client documents may be quoted. Passing an
-    excerpt to a room that is not client-aware does not make it client-aware.
+    An empty `room` is classified from the question; a caller that has already
+    routed (app.py) passes the room it decided on and it is honoured as-is.
+    rooms.py then decides what that room may read: whether the product index is
+    in scope at all, and whether filed client documents may be quoted. Passing
+    an excerpt to a room that is not client-aware does not make it one.
     """
-    room = (room or "fa").lower()
+    room = (room or classify(question).room).lower()
     spec = get_room(room)
     if not spec.include_clients:
         client_excerpt = ""
 
+    as_of = parse_as_of(question)
     results = []
     if spec.allow_product_index:
         lookup = rewrite_query(question, history)
         drop = corpus_exclusions(room)
-        results = (search(conn, lookup, exclude_prefixes=drop)
-                   or search(conn, question, exclude_prefixes=drop))
+        results = (search(conn, lookup, as_of=as_of, exclude_prefixes=drop)
+                   or search(conn, question, as_of=as_of, exclude_prefixes=drop))
+        results = [(row, score) for row, score in results if _keep_source(room, row[1])]
     if not results and not client_excerpt:
         if not spec.allow_product_index:
             return f"The {room} room does not answer from the product index.", []
-        return "Nothing indexed yet. Run:  python ingest.py", []
+        return "Nothing indexed for this room yet. File a lesson or run ingest.", []
 
-    as_of = parse_as_of(question)
     intent = query_intent(question)
-    context = build_context(results) if results else "(no product pages retrieved)"
+    context = build_context(results) if results else "(no pages retrieved)"
     prior = ""
     if history:
         turns = []
@@ -60,7 +82,7 @@ def answer(conn, question, history=None, client_excerpt="", room="fa"):
         if turns:
             prior = "Earlier in this chat:\n" + "\n".join(turns) + "\n\n"
     client_block = ""
-    if client_excerpt:
+    if client_excerpt and room in {"fa", "roa"}:
         client_block = (
             "\n\nClient-file extracts (filed documents only):\n"
             + client_excerpt[:12000]
@@ -72,14 +94,14 @@ def answer(conn, question, history=None, client_excerpt="", room="fa"):
         think_block = as_prompt_block(thought) + "\n"
     user = (
         f"{ANSWER_SHAPE}\n\n{think_block}{prior}"
-        f"Product-guide extracts (as_of={as_of}, intent={intent}):\n\n{context}\n"
+        f"Extracts (as_of={as_of}, intent={intent}):\n\n{context}\n"
         f"{client_block}"
-        f"---\n\nAdviser's question: {question}\n\n"
+        f"---\n\nQuestion: {question}\n\n"
         "Answer from the extracts only. Cite SOURCE and PAGE for figures. "
         "If a fact is from a client file, name the file. "
         "If the extracts do not contain the answer, say so. Do not invent."
     )
-    # The room's own standard and refusal, not one generic prompt for the desk.
+    # The room's own standard, doctrine and refusal — not one desk-wide prompt.
     raw = chat(expert_system(room), user)
     grounded, _missing = span_check(raw, context + "\n" + (client_excerpt or ""))
     if spec.draft_banner and not grounded.lstrip().startswith(spec.draft_banner.strip()):
@@ -99,7 +121,7 @@ def main():
     ap.add_argument("question", nargs="*")
     ap.add_argument("--sources", action="store_true")
     ap.add_argument("--show", metavar="Q")
-    ap.add_argument("--room", default="fa")
+    ap.add_argument("--room", default="")
     args = ap.parse_args()
     conn = store.connect()
     if args.sources:
@@ -134,7 +156,6 @@ def main():
         print_citations(results)
         return
     print(f"\nFortitudo AI  -  {CHAT_MODEL}  -  fully offline")
-    print("Ask a product question. Ctrl+C or 'quit' to exit.\n")
     history = []
     while True:
         try:

@@ -1,8 +1,7 @@
 """Fortitudo AI local workflow app.
 
 Run with ``python app.py`` and open http://127.0.0.1:8000.
-Product-guide questions use Ollama. Client records, files and projections
-remain on this machine and are kept separate from the product index.
+Product-guide questions use Ollama. Client records stay on this machine.
 """
 import argparse
 import base64
@@ -23,6 +22,8 @@ from ingest import extract_any
 from retrieval import build_context, corpus_exclusions, search
 from config import CHAT_MODEL, EMBED_MODEL, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_DIR
 from llm import OllamaError, chat, has_model, health
+import desk_extra
+import ask as ask_mod
 
 try:
     import pdfplumber  # noqa: F401
@@ -63,13 +64,12 @@ def load_ui(filename: str) -> str:
         return (
             "<!DOCTYPE html><html><body style='font-family:sans-serif;padding:2rem'>"
             f"<h1>Fortitudo AI</h1><p>UI file missing: <code>{path}</code></p>"
-            "<p>Create <code>web/app.html</code> or reinstall the workspace.</p></body></html>"
+            "</body></html>"
         )
     return path.read_text(encoding="utf-8")
 
 
 def projection(values):
-    """Project end-of-month contributions with an annual advisory fee."""
     years = max(1, min(int(values.get("years", 5)), 60))
     lump = max(0.0, float(values.get("lump_sum", 0) or 0))
     monthly = max(0.0, float(values.get("monthly_contribution", 0) or 0))
@@ -117,7 +117,6 @@ def projection(values):
 
 
 def client_source_text(client):
-    """Extract a bounded amount of text from the client's filed documents."""
     pieces = []
     total = 0
     for doc in client["documents"]:
@@ -156,8 +155,8 @@ Rules:
 3. Professional, neutral language. South African English.
 4. First line must be: INTERNAL DRAFT — ADVISER REVIEW REQUIRED.
 5. Do not write as if advice has been approved or delivered.
-6. Respect FAIS concepts: FNA, Record of Advice elements, FICA/CDD, suitability and disclosure — without fabricating compliance content.
-7. Where product mechanics are mentioned, leave [EVIDENCE: document, page] for the adviser to complete from technical guides."""
+6. Respect FAIS concepts without fabricating compliance content.
+7. Where product mechanics are mentioned, leave [EVIDENCE: document, page]."""
 
 
 SHELF_SUFFIXES = {".pdf", ".md", ".txt"}
@@ -272,7 +271,6 @@ class Handler(BaseHTTPRequestHandler):
     def send_file(self, path: Path, content_type: str):
         if not path.exists() or not path.is_file():
             return self.send_json({"error": "Not found."}, 404)
-        # Prevent path traversal: only serve from ROOT
         try:
             path.resolve().relative_to(ROOT.resolve())
         except ValueError:
@@ -288,6 +286,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parts = [unquote(x) for x in urlparse(self.path).path.strip("/").split("/") if x]
         try:
+            if desk_extra.handle_get(self, parts):
+                return
             if not parts:
                 return self.send_html()
             if parts[0] == "assets" and len(parts) == 2:
@@ -297,22 +297,6 @@ class Handler(BaseHTTPRequestHandler):
                 path = ROOT / "assets" / name
                 ctype = "image/svg+xml" if name.endswith(".svg") else "application/octet-stream"
                 return self.send_file(path, ctype)
-            if len(parts) == 2 and parts[0] == "m":
-                # The one public surface. Serves only from the mocks directory,
-                # by exact slug, and never touches the client vault.
-                import mockup_router
-
-                path = mockup_router.mock_path(parts[1])
-                if path is None or not path.exists():
-                    return self.send_json({"error": "Not found."}, 404)
-                body = path.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("X-Robots-Tag", "noindex, nofollow")
-                self.end_headers()
-                self.wfile.write(body)
-                return
             if parts == ["api", "status"]:
                 conn = store.connect()
                 try:
@@ -329,40 +313,6 @@ class Handler(BaseHTTPRequestHandler):
                     "drop_zone": str(sort_engine.DROP_ZONE),
                     "clients_indexed": sum(1 for n, c in store.sources(conn) if n.startswith("client:")),
                     "sources": [{"name": n, "pages": c} for n, c in store.sources(conn)],
-                })
-            if parts == ["api", "learn"]:
-                conn = store.connect()
-                return self.send_json({
-                    "docs": shelf_files(),
-                    "sources": [{"name": n, "pages": c} for n, c in store.sources(conn)],
-                    "how": LEARN_HOW,
-                })
-            if parts == ["api", "learn", "self"]:
-                return self.send_json({
-                    "enabled": False,
-                    "interval_hours": 0,
-                    "last": None,
-                    "curriculum": [
-                        {"id": row["id"], "title": row["title"], "why": row["why"]}
-                        for row in branch_shelves() if not row["have"]
-                    ],
-                    "note": SELF_LEARN_NOTE,
-                })
-            if parts == ["api", "learn", "discover"]:
-                shelves = branch_shelves()
-                return self.send_json({
-                    "catalog": [
-                        {
-                            "id": row["id"], "branch": row["branch"], "title": row["title"],
-                            "why": row["why"], "url": "", "ask": f"Teach me {row['branch']}: ",
-                        }
-                        for row in shelves
-                    ],
-                    "gaps": [
-                        {"id": row["id"], "title": row["title"], "branch": row["branch"], "have": row["have"]}
-                        for row in shelves
-                    ],
-                    "rule": "Shelves are read off disk. Nothing here is researched for you.",
                 })
             if parts == ["api", "clients"]:
                 return self.send_json(client_store.list_clients())
@@ -406,6 +356,8 @@ class Handler(BaseHTTPRequestHandler):
         parts = [unquote(x) for x in urlparse(self.path).path.strip("/").split("/") if x]
         try:
             body = json_body(self)
+            if desk_extra.handle_post(self, parts, body):
+                return
             if parts == ["api", "clients"]:
                 cid = client_store.create_client(body.get("name", ""), body.get("email", ""), body.get("phone", ""))
                 return self.send_json({"id": cid})
@@ -441,37 +393,43 @@ class Handler(BaseHTTPRequestHandler):
                     if not client:
                         raise ValueError("Client not found.")
                     draft_type = str(body.get("draft_type", "Advice summary"))
-                    source = client_source_text(client)
-
-                    # Website mockup: structured HTML via dedicated generator
                     if draft_type in ("Website mockup", "Client website mockup"):
                         brief = str(body.get("brief", "")).strip()
                         # Client side of the desk: practice storefront only.
-                        # A trade shop is a Craft lead, not an advice client.
+                        # A trade shop is a Craft lead, not an advice client, and
+                        # the filed documents are not consulted at all — the page
+                        # is written from the brief.
                         import mockup_router
 
+                        if not brief:
+                            raise ValueError(
+                                "Give a brief for the page (shop facts, or "
+                                "'Fortitudo Wealth practice storefront'). "
+                                "The page is never generated from the FNA."
+                            )
                         html = mockup_router.generate_for_client(
-                            client.get("name") or cid, source, extra_brief=brief,
+                            client.get("name") or cid, "", extra_brief=brief,
                         )
                         filename = "website_mockup.html"
                         path = client_store.add_generated_file(cid, filename, html)
                         client_store.add_note(
                             cid, "AI draft", "Website mockup (internal)",
-                            "Generated HTML mockup saved as website_mockup.html. Open the file in a browser for preview.",
+                            "Generated from the brief only. Open website_mockup.html in a browser.",
                         )
                         return self.send_json({
                             "draft": html,
                             "path": path,
                             "format": "html",
-                            "message": "Mockup HTML saved to the client folder. Open website_mockup.html in a browser.",
+                            "message": "Mockup saved from the brief, not the FNA.",
                         })
 
+                    source = client_source_text(client)
                     instructions = {
-                        "Advice summary": "Create an internal summary of the client's circumstances, objectives, information gaps and issues requiring adviser confirmation. Focus on identifying missing context for advice.",
-                        "ROA structure": "Create an INTERNAL Record of Advice working draft aligned to FAIS practice (not client-facing). Sections: (1) Summary of information on which advice is based — circumstances, needs, objectives from filed documents only; (2) Products / options considered; (3) Product(s) recommended and specific reasons linked to stated needs; (4) Material risks, limitations, waiting/survival periods and definitions with [EVIDENCE: document, page] placeholders; (5) Costs, fees and charges — [MISSING] if not in files; (6) Replacement comparison if a replacement is implied — else state N/A; (7) Outstanding FICA / documents / information still required; (8) Adviser confirmation checklist. Label top: INTERNAL DRAFT — ADVISER REVIEW REQUIRED. Never invent product figures. Use [MISSING] freely.",
-                        "Follow-up": "Create a concise internal follow-up list for the adviser and client. List missing documents (FICA, RPQ, etc.), specific questions for the client, and proposed next actions. Do not invent dates.",
-                        "Evidence Pack": "Generate a client-facing 'Evidence Pack' draft. This should not be a letter, but a technical supplement that explains the specific mechanics of the proposed benefits (e.g., survival periods, waiting periods, definition of severity). Use clear, professional language that builds trust through technical transparency.",
-                        "Technical Post": "Transform a technical finding from the client documents into a draft LinkedIn or blog post. Focus on one specific technical nuance (e.g., waiting periods, exclusions, or specific benefit wording). Structure: 1. Hook (The problem), 2. The Nuance (The technical detail), 3. The Solution (Structure over emotion). Avoid generic advice; keep it technical and authoritative.",
+                        "Advice summary": "Create an internal summary of the client's circumstances, objectives, information gaps and issues requiring adviser confirmation.",
+                        "ROA structure": "Create an INTERNAL Record of Advice working draft. Label top: INTERNAL DRAFT — ADVISER REVIEW REQUIRED. Never invent product figures. Use [MISSING] freely.",
+                        "Follow-up": "Create a concise internal follow-up list. Do not invent dates.",
+                        "Evidence Pack": "Generate a technical supplement that explains mechanics from the files only.",
+                        "Technical Post": "Transform one technical finding into a draft post. No invented figures.",
                     }.get(draft_type, "Create an internal adviser working summary.")
                     prompt = f"Client documents:\n\n{source}\n\n---\nDraft type: {draft_type}\n{instructions}"
                     draft = chat(DRAFT_SYSTEM, prompt)
@@ -489,100 +447,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"draft": draft, "path": path})
                 if action == "meeting-prep":
                     return self.send_json(client_store.meeting_prep(cid))
-            if parts == ["api", "learn", "self"]:
-                return self.send_json({"ok": False, "errors": [SELF_LEARN_NOTE]})
-            if parts == ["api", "learn", "teach"]:
-                import learn_teach
-                title = str(body.get("title", "")).strip() or "Lesson"
-                text = str(body.get("text", "")).strip()
-                if not text:
-                    raise ValueError("Paste what it should learn. This desk does not invent the lesson for you.")
-                applies = str(body.get("applies", "") or "all")
-                path = learn_teach.file_lesson(title, text, applies)
-                conn = store.connect()
-                pages = dict(store.sources(conn)).get(f"learn:{applies}:{path.name}", 0)
-                return self.send_json({
-                    "ok": True, "pages": pages, "source": path.name,
-                    "researched": None, "note": RESEARCH_NOTE if body.get("research") else "",
-                })
-            if parts == ["api", "ingest", "paste"]:
-                import learn_teach
-                title = str(body.get("title", "")).strip() or "Note"
-                text = str(body.get("text", "")).strip()
-                if not text:
-                    raise ValueError("Paste some text to file.")
-                path = learn_teach.file_lesson(title, text, "all")
-                conn = store.connect()
-                pages = dict(store.sources(conn)).get(f"learn:all:{path.name}", 0)
-                return self.send_json({
-                    "ok": True, "pages": pages, "source": path.name,
-                    "branches": ["advisor", "drama", "craft"],
-                })
-            if parts == ["api", "ingest", "guides"]:
-                import ingest
-                filename = str(body.get("filename", "")).strip()
-                if not filename:
-                    raise ValueError("Give the guide a filename.")
-                suffix = Path(filename).suffix.lower()
-                if suffix not in SHELF_SUFFIXES:
-                    raise ValueError("Guides must be PDF, TXT or MD.")
-                raw = base64.b64decode(body.get("content_base64", ""), validate=True)
-                if not raw or len(raw) > 25 * 1024 * 1024:
-                    raise ValueError("Choose a guide smaller than 25 MB.")
-                topic = re.sub(r"[^a-z0-9]+", "-", str(body.get("topic", "misc")).lower()).strip("-") or "misc"
-                safe = Path(filename).name
-                dest = DOCS_DIR / "learn" / topic / safe
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(raw)
-                source = f"learn:{topic}:{safe}"
-                pages = ingest.ingest_file(store.connect(), dest, rebuild=False, source_name=source)
-                return self.send_json({"ok": True, "pages": pages, "topic": topic, "source": source})
-            if parts == ["api", "sight"]:
-                import sight
-                image = str(body.get("image_base64", ""))
-                if not image:
-                    raise ValueError("Attach an image.")
-                return self.send_json(sight.ingest_sight(
-                    image,
-                    str(body.get("filename", "shot.png")),
-                    str(body.get("caption", "")),
-                    str(body.get("intent", "chat")),
-                    str(body.get("client_id", "")),
-                ))
-            if parts == ["api", "ingest", "clients"]:
-                import ingest
-                client_store.sync_from_disk()
-                conn = store.connect()
-                count = ingest.ingest_clients(conn, rebuild=body.get("rebuild", False))
-                return self.send_json({"ok": True, "pages": count})
-            if parts == ["api", "projection"]:
-                return self.send_json(projection(body))
-            if parts == ["api", "craft", "publish"]:
-                import mockup_router
-                name = str(body.get("name", "")).strip()
-                if not name:
-                    raise ValueError("Name the shop.")
-                out = mockup_router.publish_lead_mock(
-                    name, str(body.get("brief", "")),
-                    str(body.get("city", "")).strip() or "Kempton Park",
-                )
-                return self.send_json({"ok": True, **out})
-            if parts == ["api", "craft", "unpublish"]:
-                import mockup_router
-                slug = str(body.get("slug", "")).strip()
-                return self.send_json({"ok": mockup_router.unpublish(slug)})
-            if parts == ["api", "craft", "mock"]:
-                import mockup_router
-                name = str(body.get("name", "")).strip()
-                if not name:
-                    raise ValueError("Name the shop.")
-                return self.send_json({
-                    "ok": True,
-                    "page": mockup_router.generate_for_lead(
-                        name, str(body.get("brief", "")),
-                        str(body.get("city", "")).strip() or "Kempton Park",
-                    ),
-                })
             if parts == ["api", "route"]:
                 route = expert_route.classify(
                     str(body.get("question", "")), hinted_room=str(body.get("room", "")),
@@ -595,10 +459,11 @@ class Handler(BaseHTTPRequestHandler):
                 question = str(body.get("question", "")).strip()
                 if not question or len(question) > 2000:
                     raise ValueError("Enter a question up to 2,000 characters.")
+                hinted = str(body.get("room") or "")
+                route = expert_route.classify(question, hinted_room=hinted)
                 conn = store.connect()
-
                 excerpt = ""
-                client_id = str(body.get("client_id", "")).strip()
+                client_id = str(body.get("client_id") or "").strip()
                 if client_id:
                     client = client_store.get_client(client_id)
                     if not client:
@@ -608,17 +473,18 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError:
                         excerpt = ""  # nothing readable filed yet — answer without it
 
-                hinted = str(body.get("room", "")).strip()
-                route = expert_route.classify(question, hinted_room=hinted)
                 room, why = route.room, route.why
                 # Selecting a client makes this a client-aware job, and fa is not
                 # a client-aware room. Only promote when the desk did not choose.
                 if excerpt and room == "fa" and not hinted:
                     room, why = "roa", why + "; client attached"
                 spec = rooms.get_room(room)
+                if not spec.include_clients:
+                    excerpt = ""
 
                 if body.get("show_only"):
-                    results = search(conn, question, exclude_prefixes=corpus_exclusions(room))
+                    results = search(conn, question, as_of=versioning.parse_as_of(question),
+                                     exclude_prefixes=corpus_exclusions(room))
                     return self.send_json({"show_only": True, "room": room, "pages": [
                         {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3),
                          "snippet": r[0][3][:1500]} for r in results
@@ -629,18 +495,17 @@ class Handler(BaseHTTPRequestHandler):
                 # Same path as the CLI: history rewriting, the room's own standard
                 # and refusal, the client-file block, and the span check that
                 # strips a figure the retrieved pages do not support.
-                import ask as ask_module
-
                 history = body.get("history") if isinstance(body.get("history"), list) else []
-                text, results = ask_module.answer(
+                text, results = ask_mod.answer(
                     conn, question, history=history, client_excerpt=excerpt, room=room,
                 )
                 return self.send_json({
                     "answer": text,
                     "room": room,
                     "why": why,
+                    "standard": route.standard,
                     "refuse": route.refuse,
-                    "used_client_files": bool(excerpt) and spec.include_clients,
+                    "used_client_files": bool(excerpt),
                     "sources": [
                         {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3)}
                         for r in results
@@ -658,8 +523,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global PORT
     ap = argparse.ArgumentParser(description="Fortitudo AI local workspace")
-    ap.add_argument("--port", type=int, default=PORT, help="HTTP port (default 8000)")
-    ap.add_argument("--host", default=HOST, help="Bind address (default 127.0.0.1)")
+    ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--host", default=HOST)
     args = ap.parse_args()
     PORT = args.port
 
