@@ -1,4 +1,4 @@
-﻿"""
+"""
 Fortitudo AI - configuration
 Everything tunable lives here. Change values, re-run ingest.py if you touch
 CHUNK settings or EMBED_MODEL.
@@ -6,6 +6,7 @@ CHUNK settings or EMBED_MODEL.
 Environment overrides (optional):
   FORTITUDO_CHAT_MODEL, FORTITUDO_EMBED_MODEL, FORTITUDO_OLLAMA_HOST
   FORTITUDO_CLIENT_DATA_DIR, FORTITUDO_DROP_ZONE, FORTITUDO_REVIEW_ZONE
+  FORTITUDO_DATA_ROOT, FORTITUDO_PUBLIC_BASE
 """
 import os
 from pathlib import Path
@@ -16,6 +17,28 @@ DOCS_DIR = ROOT / "docs"          # drop your PDFs here
 DATA_DIR = ROOT / "data"          # sqlite index lives here
 DB_PATH = DATA_DIR / "index.db"
 WEB_DIR = ROOT / "web"
+
+# Client vault, drop zone and drama records live outside the repo. The desk is
+# a Windows product, but "C:\FortitudoData" is a relative name everywhere else,
+# so running the backend on Linux or macOS would create that literal folder in
+# the working directory. FORTITUDO_DATA_ROOT overrides both.
+DATA_ROOT = Path(
+    os.environ.get("FORTITUDO_DATA_ROOT")
+    or (r"C:\FortitudoData" if os.name == "nt" else Path.home() / "FortitudoData")
+)
+
+# Published Craft mockups. These are the only files this server hands to an
+# unauthenticated caller, so they sit in their own directory well away from
+# the client vault. One constant: desk_extra serves what craft/page writes.
+MOCKS_DIR = DATA_DIR / "mocks"
+
+# What the pamphlet QR points at. Empty until a real host is set, which is
+# what design_reason checks before it will draw a printable QR at all.
+PUBLIC_BASE = (os.environ.get("FORTITUDO_PUBLIC_BASE") or "").rstrip("/")
+
+# Where the desk itself answers, used only as the QR fallback so a preview
+# link still resolves locally. Overridden by FORTITUDO_PORT.
+LOCAL_BASE = f"http://127.0.0.1:{os.environ.get('FORTITUDO_PORT', '8000')}"
 
 # ---------------------------------------------------------------- ollama
 OLLAMA_HOST = os.environ.get("FORTITUDO_OLLAMA_HOST") or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")

@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List
+from urllib.parse import quote
 
 from trade_page import TradeFacts, _headline, facts_from_text, render_trade_html
 
@@ -145,7 +146,7 @@ def flyer_html(facts: TradeFacts, spec: DesignSpec, mock_url: str) -> str:
         and "localhost" not in mock_url
     )
     if public:
-        q = "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=" + __import__("urllib.parse").quote(mock_url, safe="")
+        q = "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=" + quote(mock_url, safe="")
         media = f'<img class="qr" alt="QR" src="{escape(q)}">'
         warn = ""
     else:
@@ -174,7 +175,13 @@ def design_and_render(name: str, source_text: str, city: str = "Kempton Park", m
 
 
 def _esc_safe(s: str) -> str:
-    return str(s or "").replace("&", "&").replace("<", "<").replace(">", ">").replace('"', """)
+    return (
+        str(s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 if __name__ == "__main__":

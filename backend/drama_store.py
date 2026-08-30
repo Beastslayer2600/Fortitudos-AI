@@ -5,7 +5,9 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-DATA_ROOT = Path(__import__("os").environ.get("FORTITUDO_DRAMA_DATA_DIR", r"C:\FortitudoData\drama"))
+from config import DATA_ROOT as _DATA_ROOT
+
+DATA_ROOT = Path(__import__("os").environ.get("FORTITUDO_DRAMA_DATA_DIR") or _DATA_ROOT / "drama")
 PROGRAMMES_DIR = Path(__import__("os").environ.get("FORTITUDO_DRAMA_PROGRAMMES_DIR", r"C:\Werk\Fortitudostudios-Drama\Programmes"))
 ONTOLOGY_PATH = Path(__import__("os").environ.get("FORTITUDO_DRAMA_ONTOLOGY_PATH", r"C:\Werk\Fortitudostudios-Drama\Drama_Visual_Arts_Adjudication_Ontology_v2.json"))
 DB_PATH = DATA_ROOT / "adjudications.db"

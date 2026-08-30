@@ -4,10 +4,13 @@ from __future__ import annotations
 import base64
 import os
 import re
+from pathlib import Path
 
-from config import DATA_DIR, DOCS_DIR
+from config import DOCS_DIR, LOCAL_BASE, MOCKS_DIR, PUBLIC_BASE
 
-MOCK_DIR = DATA_DIR / "mocks"
+MOCK_DIR = MOCKS_DIR
+SHELF_SUFFIXES = {".pdf", ".md", ".txt"}
+MAX_GUIDE_BYTES = 25 * 1024 * 1024
 DESK_BUILD = "wire3-2026-08-29"
 
 
@@ -17,7 +20,7 @@ def _slug(name: str) -> str:
 
 
 def public_base() -> str:
-    return (os.environ.get("FORTITUDO_PUBLIC_BASE") or "").rstrip("/")
+    return PUBLIC_BASE
 
 
 def _is_public(url: str) -> bool:
@@ -133,18 +136,24 @@ def handle_post(handler, parts, body) -> bool:
     if parts == ["api", "ingest", "guides"]:
         import ingest, store
         name = str(body.get("filename") or "guide.md")
+        # Only the shelf's own file kinds, and only under DOCS_DIR: an
+        # unsanitised topic is a directory name, so "../.." would escape it.
+        if Path(name).suffix.lower() not in SHELF_SUFFIXES:
+            raise ValueError("Guides must be PDF, TXT or MD.")
         raw = base64.b64decode(body.get("content_base64") or b"", validate=False)
-        topic = str(body.get("topic") or "misc")
+        if not raw or len(raw) > MAX_GUIDE_BYTES:
+            raise ValueError("Choose a guide smaller than 25 MB.")
+        topic = _slug(str(body.get("topic") or "misc"))
         dest = DOCS_DIR / topic
         dest.mkdir(parents=True, exist_ok=True)
-        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name)
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(name).name)
         path = dest / safe
         path.write_bytes(raw)
         pages = ingest.ingest_file(store.connect(), path, rebuild=False, source_name=f"guide:{topic}:{safe}")
         handler.send_json({"ok": True, "pages": pages or 1, "topic": topic, "source": str(path)})
         return True
     if parts == ["api", "craft", "page"]:
-        from design_reason import design_and_render
+        import mockup_router
         name = str(body.get("name") or "Shop").strip()
         facts = str(body.get("facts") or body.get("brief") or "").strip()
         city = str(body.get("city") or "Kempton Park").strip()
@@ -156,8 +165,10 @@ def handle_post(handler, parts, body) -> bool:
             if not mock_url.endswith(slug):
                 mock_url = mock_url + "/m/" + slug
         else:
-            mock_url = "http://127.0.0.1:8000/m/" + slug
-        out = design_and_render(name, facts, city, mock_url)
+            mock_url = f"{LOCAL_BASE}/m/{slug}"
+        # Craft leads and advice clients never share a record; the router refuses
+        # a brief carrying client-file language.
+        out = mockup_router.generate_for_lead(name, facts, city=city, mock_url=mock_url)
         (MOCK_DIR / f"{slug}.html").write_text(out["page"], encoding="utf-8")
         (MOCK_DIR / f"{slug}-flyer.html").write_text(out["flyer"], encoding="utf-8")
         (MOCK_DIR / f"{slug}-spec.json").write_text(

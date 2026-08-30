@@ -7,21 +7,23 @@ import argparse
 import base64
 import json
 import os
+import re
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
 import client_store
+import expert_route
+import rooms
 import store
+import versioning
 import sort_engine
 from ingest import extract_any
-from config import CHAT_MODEL, EMBED_MODEL, MAX_PAGE_CHARS, WEB_DIR, ROOT
+from retrieval import corpus_exclusions, search
+from config import CHAT_MODEL, EMBED_MODEL, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_DIR
 from llm import OllamaError, chat, has_model, health
-from mockup_router import generate_from_client_documents
-from crossover import refuse_reason
 import desk_extra
 import ask as ask_mod
-from expert_route import classify
 
 try:
     import pdfplumber  # noqa: F401
@@ -31,6 +33,29 @@ except ImportError:
 HOST = "127.0.0.1"
 PORT = 8000
 MAX_BODY = 35 * 1024 * 1024
+
+# The desk UI runs on :8080 and calls this server cross-origin. A wildcard
+# would let any site the adviser has open read client files off the loopback
+# backend, which has no login, so only the desk's own port is reflected back.
+DESK_PORT = os.environ.get("FORTITUDO_DESK_PORT", "8080")
+EXTRA_ORIGINS = {
+    o.strip().rstrip("/")
+    for o in os.environ.get("FORTITUDO_ALLOWED_ORIGINS", "").split(",")
+    if o.strip()
+}
+
+
+def origin_allowed(origin: str) -> bool:
+    """True for the desk UI on any host (LAN or Tailscale) plus explicit extras."""
+    if not origin:
+        return False
+    origin = origin.rstrip("/")
+    if origin in EXTRA_ORIGINS:
+        return True
+    parsed = urlparse(origin)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    return str(parsed.port or "") == DESK_PORT
 
 
 def load_ui(filename: str) -> str:
@@ -95,6 +120,8 @@ def client_source_text(client):
     pieces = []
     total = 0
     for doc in client["documents"]:
+        if doc["doc_type"] == client_store.AI_DRAFT_TYPE:
+            continue  # never let a draft become the source for the next one
         path = Path(doc["relative_path"])
         if not path.exists():
             continue
@@ -134,7 +161,8 @@ Rules:
 
 def json_body(handler):
     length = int(handler.headers.get("Content-Length", "0"))
-    if length > MAX_BODY:
+    # A negative length would make rfile.read() block until the peer hangs up.
+    if length < 0 or length > MAX_BODY:
         raise ValueError("Request is too large.")
     return json.loads(handler.rfile.read(length) or b"{}")
 
@@ -144,11 +172,13 @@ class Handler(BaseHTTPRequestHandler):
         print(fmt % args)
 
     def cors(self):
-        origin = self.headers.get("Origin") or "*"
-        self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Allow-Credentials", "true")
+        origin = self.headers.get("Origin", "")
+        self.send_header("Vary", "Origin")
+        if origin_allowed(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Max-Age", "600")
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -229,6 +259,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not doc:
                     return self.send_json({"error": "Document not found."}, 404)
                 path = Path(doc["relative_path"])
+                # The stored path decides what gets read, so confirm it is still
+                # inside the client vault before serving it.
+                try:
+                    path.resolve().relative_to(client_store.CLIENTS_DIR.resolve())
+                except ValueError:
+                    return self.send_json({"error": "Document not found."}, 404)
                 if not path.exists():
                     return self.send_json({"error": "File missing on disk."}, 404)
                 ctype = doc.get("content_type") or "application/octet-stream"
@@ -294,17 +330,23 @@ class Handler(BaseHTTPRequestHandler):
                     draft_type = str(body.get("draft_type", "Advice summary"))
                     if draft_type in ("Website mockup", "Client website mockup"):
                         brief = str(body.get("brief", "")).strip()
-                        name = client.get("name") or cid
-                        refuse = refuse_reason(brief + "\n" + name)
-                        if refuse and "storefront" not in brief.lower() and "website" not in brief.lower():
-                            return self.send_json({"error": refuse}, 400)
+                        # Client side of the desk: practice storefront only.
+                        # A trade shop is a Craft lead, not an advice client, and
+                        # the filed documents are not consulted at all — the page
+                        # is written from the brief.
+                        import mockup_router
+
                         if not brief:
-                            return self.send_json({
-                                "error": "Give a brief for the page (shop facts or 'Fortitudo Wealth practice storefront'). Do not generate a site from the FNA.",
-                            }, 400)
-                        html = generate_from_client_documents(name, brief, extra_brief=brief)
+                            raise ValueError(
+                                "Give a brief for the page (shop facts, or "
+                                "'Fortitudo Wealth practice storefront'). "
+                                "The page is never generated from the FNA."
+                            )
+                        html = mockup_router.generate_for_client(
+                            client.get("name") or cid, "", extra_brief=brief,
+                        )
                         filename = "website_mockup.html"
-                        path = client_store.add_generated_file(cid, filename, html, "Other")
+                        path = client_store.add_generated_file(cid, filename, html)
                         client_store.add_note(
                             cid, "AI draft", "Website mockup (internal)",
                             "Generated from the brief only. Open website_mockup.html in a browser.",
@@ -326,53 +368,79 @@ class Handler(BaseHTTPRequestHandler):
                     }.get(draft_type, "Create an internal adviser working summary.")
                     prompt = f"Client documents:\n\n{source}\n\n---\nDraft type: {draft_type}\n{instructions}"
                     draft = chat(DRAFT_SYSTEM, prompt)
+                    # Drafting is roa work and was the one generated output with
+                    # no check on it: a figure the client file does not support
+                    # went straight into a Record of Advice, and the banner was
+                    # only ever an instruction in the prompt.
+                    draft, _flagged = versioning.span_check(draft, source)
+                    banner = rooms.get_room("roa").draft_banner
+                    if banner and not draft.lstrip().startswith(banner.strip()):
+                        draft = banner + draft
                     filename = f"{draft_type.lower().replace(' ', '_')}_draft.md"
-                    path = client_store.add_generated_file(
-                        cid, filename, draft,
-                        "Advice Report" if draft_type == "ROA structure" else "Other",
-                    )
+                    path = client_store.add_generated_file(cid, filename, draft)
                     client_store.add_note(cid, "AI draft", f"{draft_type} (internal draft)", draft)
                     return self.send_json({"draft": draft, "path": path})
                 if action == "meeting-prep":
                     return self.send_json(client_store.meeting_prep(cid))
-            if parts == ["api", "ingest", "clients"]:
-                import ingest
-                client_store.sync_from_disk()
-                conn = store.connect()
-                count = ingest.ingest_clients(conn, rebuild=body.get("rebuild", False))
-                return self.send_json({"ok": True, "pages": count})
-            if parts == ["api", "projection"]:
-                return self.send_json(projection(body))
+            if parts == ["api", "route"]:
+                route = expert_route.classify(
+                    str(body.get("question", "")), hinted_room=str(body.get("room", "")),
+                )
+                return self.send_json({
+                    "room": route.room, "why": route.why, "standard": route.standard,
+                    "refuse": route.refuse, "tools": route.tools,
+                })
             if parts == ["api", "ask"]:
                 question = str(body.get("question", "")).strip()
                 if not question or len(question) > 2000:
                     raise ValueError("Enter a question up to 2,000 characters.")
                 hinted = str(body.get("room") or "")
-                route = classify(question, hinted_room=hinted)
+                route = expert_route.classify(question, hinted_room=hinted)
                 conn = store.connect()
                 excerpt = ""
-                used_client = False
-                cid = str(body.get("client_id") or "").strip()
-                if cid and route.room in {"fa", "roa"}:
-                    client = client_store.get_client(cid)
-                    if client:
-                        try:
-                            excerpt = client_source_text(client)
-                            used_client = True
-                        except ValueError:
-                            excerpt = ""
+                client_id = str(body.get("client_id") or "").strip()
+                if client_id:
+                    client = client_store.get_client(client_id)
+                    if not client:
+                        raise ValueError("Client not found.")
+                    try:
+                        excerpt = client_source_text(client)
+                    except ValueError:
+                        excerpt = ""  # nothing readable filed yet — answer without it
+
+                room, why = route.room, route.why
+                # Selecting a client makes this a client-aware job, and fa is not
+                # a client-aware room. Only promote when the desk did not choose.
+                if excerpt and room == "fa" and not hinted:
+                    room, why = "roa", why + "; client attached"
+                spec = rooms.get_room(room)
+                if not spec.include_clients:
+                    excerpt = ""
+
+                if body.get("show_only"):
+                    results = search(conn, question, as_of=versioning.parse_as_of(question),
+                                     exclude_prefixes=corpus_exclusions(room))
+                    return self.send_json({"show_only": True, "room": room, "pages": [
+                        {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3),
+                         "snippet": r[0][3][:1500]} for r in results
+                    ], "sources": [
+                        {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3)} for r in results
+                    ]})
+
+                # Same path as the CLI: history rewriting, the room's own standard
+                # and refusal, the client-file block, and the span check that
+                # strips a figure the retrieved pages do not support.
+                history = body.get("history") if isinstance(body.get("history"), list) else []
                 text, results = ask_mod.answer(
-                    conn,
-                    question,
-                    history=body.get("history") or [],
-                    client_excerpt=excerpt,
-                    room=route.room,
+                    conn, question, history=history, client_excerpt=excerpt, room=room,
                 )
                 return self.send_json({
                     "answer": text,
-                    "room": route.room,
+                    "room": room,
+                    "why": why,
                     "standard": route.standard,
-                    "used_client_files": used_client,
+                    "refuse": route.refuse,
+                    "used_client_files": bool(excerpt),
                     "sources": [
                         {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3)}
                         for r in results

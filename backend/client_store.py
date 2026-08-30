@@ -9,11 +9,11 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from config import ROOT, DATA_DIR
+from config import ROOT, DATA_DIR, DATA_ROOT
 
 # Keep client data outside the OneDrive project by default. Override this with
 # FORTITUDO_CLIENT_DATA_DIR when the approved encrypted data location differs.
-CLIENT_DATA_DIR = Path(os.environ.get("FORTITUDO_CLIENT_DATA_DIR", r"C:\FortitudoData"))
+CLIENT_DATA_DIR = Path(os.environ.get("FORTITUDO_CLIENT_DATA_DIR") or DATA_ROOT)
 CLIENTS_DIR = CLIENT_DATA_DIR / "clients"
 CLIENT_DB = CLIENT_DATA_DIR / "clients.db"
 
@@ -80,6 +80,11 @@ FOLDERS = {
     "Correspondence": "06_Correspondence",
     "Other": "07_Other",
 }
+
+# Model-written drafts live here and nowhere else. ingest.ingest_clients skips
+# this folder, so a generated RoA can never come back as filed client evidence.
+AI_DRAFT_FOLDER = "99_AI_Drafts"
+AI_DRAFT_TYPE = "AI draft"
 
 
 def now():
@@ -183,10 +188,13 @@ def sync_from_disk():
                 rel = str(doc_file.resolve())
                 if rel not in existing_docs:
                     d_type = "Other"
-                    for display, dirname in FOLDERS.items():
-                        if dirname in doc_file.parts:
-                            d_type = display
-                            break
+                    if AI_DRAFT_FOLDER in doc_file.parts:
+                        d_type = AI_DRAFT_TYPE
+                    else:
+                        for display, dirname in FOLDERS.items():
+                            if dirname in doc_file.parts:
+                                d_type = display
+                                break
                     
                     try:
                         conn.execute("INSERT INTO documents (client_id, filename, relative_path, doc_type, size, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -241,11 +249,11 @@ def _safe_filename(filename):
     return name[:160] or "upload.bin"
 
 
-def add_document(cid, filename, content, doc_type, content_type="application/octet-stream"):
+def add_document(cid, filename, content, doc_type, content_type="application/octet-stream", folder=None):
     if not re.fullmatch(r"[a-z0-9_]+", cid) or not get_client(cid):
         raise ValueError("Client not found.")
     filename = _safe_filename(filename)
-    folder = FOLDERS.get(doc_type, FOLDERS["Other"])
+    folder = folder or FOLDERS.get(doc_type, FOLDERS["Other"])
     client_dir = (CLIENTS_DIR / cid).resolve()
     if not client_dir.exists() or not client_dir.is_dir():
         raise ValueError("Client not found.")
@@ -301,8 +309,17 @@ def add_projection(cid, name, inputs, summary):
 
 
 def add_generated_file(cid, filename, content, doc_type="Other"):
-    """Save a locally generated draft through the same filing path as uploads."""
-    return add_document(cid, filename, content.encode("utf-8"), doc_type, "text/markdown")
+    """Save a model-written draft into the AI drafts folder.
+
+    Deliberately not the upload path: anything filed as a real client document
+    is indexed and can be cited back as evidence, and a draft the model wrote
+    is not evidence of anything.
+    """
+    del doc_type  # a model draft is never an Advice Report, whatever asked for it
+    return add_document(
+        cid, filename, content.encode("utf-8"), AI_DRAFT_TYPE, "text/markdown",
+        folder=AI_DRAFT_FOLDER,
+    )
 
 
 def meeting_prep(cid):

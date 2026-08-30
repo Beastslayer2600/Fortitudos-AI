@@ -51,8 +51,10 @@ export function nounFor(type: string, name = ""): string {
   return "sign";
 }
 
+// Global: without /g, replace() strips only the first claim and a note that
+// stacks several keeps all but one.
 const BANNED =
-  /\b(best in (sa|south africa|gauteng)|#1|award[- ]winning|24\/7|always open|guaranteed results|5[- ]star reviews?|no\. ?1)\b/i;
+  /\b(best in (sa|south africa|gauteng)|#1|award[- ]winning|24\/7|always open|guaranteed results|5[- ]star reviews?|no\. ?1)\b/gi;
 
 export function claimGuard(text: string): string {
   return text.replace(BANNED, "").replace(/\s{2,}/g, " ").replace(/\s+\./g, ".").trim();
@@ -68,6 +70,28 @@ export function jobFolderHint(lead: CraftLead) {
 
 export function canPitchElectronically(lead: CraftLead): boolean {
   return lead.consent === "consented" || lead.consent === "customer";
+}
+
+export type ConsentDecision = { allowed: boolean; kind: "pitch" | "ask" | "none"; reason: string };
+
+/**
+ * POPIA s69, same rules as backend/consent.py. A refusal is permanent, and one
+ * unanswered ask is the only ask — silence is not consent. The door letter is
+ * print, not electronic, so it is always allowed.
+ */
+export function mayContactElectronically(lead: CraftLead): ConsentDecision {
+  switch (lead.consent) {
+    case "refused":
+      return { allowed: false, kind: "none", reason: "They said no. That is permanent." };
+    case "asked":
+      return { allowed: false, kind: "none", reason: "Already asked once. Silence is not consent." };
+    case "consented":
+      return { allowed: true, kind: "pitch", reason: "Consent on record." };
+    case "customer":
+      return { allowed: true, kind: "pitch", reason: "Existing customer — s69(3), similar services only." };
+    default:
+      return { allowed: true, kind: "ask", reason: "First message must ask for consent, not pitch." };
+  }
 }
 
 /** Printed page. Not electronic. Always allowed. */
@@ -98,18 +122,21 @@ export function mailtoLetter(lead: CraftLead, mockUrl: string) {
     `Call and WhatsApp sit at the top. No invented hours or reviews.\n\n` +
     `Look: ${mockUrl}\n\n` +
     `The job is R5,500 once — R2,750 to start.\n\nGert\nFortitudo Studios\n+27 77 386 6299`;
-  const ask = consentAskText(lead);
-  const body = encodeURIComponent(canPitchElectronically(lead) ? pitch : ask);
+  const decision = mayContactElectronically(lead);
+  if (!decision.allowed) return "";
+  const body = encodeURIComponent(decision.kind === "pitch" ? pitch : consentAskText(lead));
   const to = lead.email ? encodeURIComponent(lead.email) : "";
   return `mailto:${to}?subject=${subject}&body=${body}`;
 }
 
 export function whatsappLink(phone: string, name: string, mockUrl: string, consent: CraftConsent = "unknown") {
+  const decision = mayContactElectronically({ consent } as CraftLead);
+  if (!decision.allowed) return "";
   const digits = phone.replace(/\D/g, "");
   const intl = digits.startsWith("0") ? `27${digits.slice(1)}` : digits;
   const pitch = `Hi ${name.split(" ")[0]}, I made a mock page for the shop. ${mockUrl}`;
   const ask = `Hi, Gert at Fortitudo Studios. May I send you a one-page website mock for ${name}? Reply YES or NO.`;
-  const text = encodeURIComponent(consent === "consented" || consent === "customer" ? pitch : ask);
+  const text = encodeURIComponent(decision.kind === "pitch" ? pitch : ask);
   return intl.length >= 10 ? `https://wa.me/${intl}?text=${text}` : "";
 }
 

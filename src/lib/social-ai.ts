@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { claimGuard } from "./craft";
 import {
   offlineSocialBatch,
   SITE_PAGES,
@@ -49,13 +50,15 @@ function parseBatch(text: string, pageId: string): SocialBatch | null {
       hashtags?: string[];
     };
     if (!parsed.linkedin || !parsed.instagram || !parsed.whatsapp) return null;
+    // The voice prompt forbids invented claims; claimGuard is what enforces it
+    // on what actually comes back. Gert is responsible for this under FAIS.
     return {
-      linkedin: parsed.linkedin.trim(),
-      instagram: parsed.instagram.trim(),
+      linkedin: claimGuard(parsed.linkedin.trim()),
+      instagram: claimGuard(parsed.instagram.trim()),
       leonardoPrompt:
         parsed.leonardoPrompt?.trim() ||
         offlineSocialBatch(page).leonardoPrompt,
-      whatsapp: parsed.whatsapp.trim(),
+      whatsapp: claimGuard(parsed.whatsapp.trim()),
       hashtags: Array.isArray(parsed.hashtags)
         ? parsed.hashtags.map(String).slice(0, 6)
         : ["#FinancialPlanning", "#WealthStructure", "#SouthAfrica"],
@@ -108,12 +111,10 @@ export const generateSocialBatch = createServerFn({ method: "POST" })
       return { ok: true as const, batch: fallback, mode: "offline" as const };
     }
 
-    const batch = parseBatch(result.text, page.id) ?? fallback;
+    const parsed = parseBatch(result.text, page.id);
     return {
       ok: true as const,
-      batch,
-      mode: (parseBatch(result.text, page.id) ? "model" : "offline") as
-        | "model"
-        | "offline",
+      batch: parsed ?? fallback,
+      mode: (parsed ? "model" : "offline") as "model" | "offline",
     };
   });

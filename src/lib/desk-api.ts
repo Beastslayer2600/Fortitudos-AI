@@ -62,8 +62,11 @@ export const deskApi = {
   ingestPaste: (title: string, text: string) =>
     json<{ ok: boolean; pages: number; source?: string; branches?: string[] }>("/api/ingest/paste", { method: "POST", body: JSON.stringify({ title, text }) }),
   ingestClients: () => json<{ ok: boolean; pages: number }>("/api/ingest/clients", { method: "POST", body: JSON.stringify({}) }),
+  /** Which room a job lands in, and why — without answering it. */
+  route: (question: string, room?: string) =>
+    json<{ room: string; why: string; standard: string; refuse: string; tools: string[] }>("/api/route", { method: "POST", body: JSON.stringify({ question, room: room || "" }) }),
   ask: (question: string, history: { role: string; content: string }[], clientId?: string, room?: string) =>
-    json<{ answer: string; sources: { source: string; page: number; score: number }[]; used_client_files: boolean; room?: string }>("/api/ask", { method: "POST", body: JSON.stringify({ question, history, client_id: clientId || "", room: room || "" }) }),
+    json<{ answer: string; room: string; why: string; standard: string; refuse: string; sources: { source: string; page: number; score: number }[]; used_client_files: boolean }>("/api/ask", { method: "POST", body: JSON.stringify({ question, history, client_id: clientId || "", room: room || "" }) }),
   craftPage: (input: { name: string; city?: string; facts: string; url?: string }) =>
     json<{ ok: boolean; slug: string; path: string; spec: Record<string, unknown>; missing: string[] }>("/api/craft/page", { method: "POST", body: JSON.stringify(input) }),
   consent: (identifier: string, action = "check") =>

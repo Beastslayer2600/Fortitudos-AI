@@ -4,7 +4,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 if not exist "package.json" (
-  echo This file must live in the lion-wolf-moss-shadow folder.
+  echo This file must live in the Fortitudos-AI folder.
   pause
   exit /b 1
 )

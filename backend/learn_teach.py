@@ -37,17 +37,19 @@ def file_lesson(title: str, text: str, applies: Applies = "craft") -> Path:
         f"{text.strip()}\n"
     )
     path.write_text(body, encoding="utf-8")
-    if applies != "advisor":
-        try:
-            import ingest, store
-            ingest.ingest_file(
-                store.connect(),
-                path,
-                rebuild=False,
-                source_name=f"learn:{applies}:{path.name}",
-            )
-        except Exception:
-            pass
+    # Every branch is indexed under its own prefix. Which rooms may retrieve
+    # which prefix is decided once, at query time, in retrieval.search — an
+    # advisor lesson that was never indexed just silently did nothing.
+    try:
+        import ingest, store
+        ingest.ingest_file(
+            store.connect(),
+            path,
+            rebuild=False,
+            source_name=f"learn:{applies}:{path.name}",
+        )
+    except Exception:
+        pass
     return path
 
 

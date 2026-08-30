@@ -4,11 +4,12 @@ import os
 import sys
 
 import store
-from retrieval import search, build_context
+from retrieval import search, build_context, corpus_exclusions
 from llm import chat, health, has_model, OllamaError
 from config import CHAT_MODEL, EMBED_MODEL
 from versioning import parse_as_of, query_intent, span_check
-from reason import ANSWER_SHAPE, DOCTRINE, as_prompt_block, think
+from reason import ANSWER_SHAPE, as_prompt_block, think
+from rooms import get_room
 from expert_route import classify, expert_system
 
 
@@ -23,6 +24,12 @@ def rewrite_query(question, history=None):
 
 
 def _keep_source(room: str, source: str) -> bool:
+    """The shelves a room may quote, on top of corpus_exclusions.
+
+    corpus_exclusions drops machine-written sources before ranking so the good
+    pages win the top-k slots; this narrows what is left to the room's own
+    shelf.
+    """
     src = str(source or "")
     if room == "fa":
         return not src.startswith(("learn:craft", "learn:voice", "learn:drama", "client:"))
@@ -35,14 +42,31 @@ def _keep_source(room: str, source: str) -> bool:
     return True
 
 
-def answer(conn, question, history=None, client_excerpt="", room="fa"):
-    route = classify(question, hinted_room=room)
-    room = route.room
-    lookup = rewrite_query(question, history)
+def answer(conn, question, history=None, client_excerpt="", room=""):
+    """Answer in one room, under that room's corpus rules.
+
+    An empty `room` is classified from the question; a caller that has already
+    routed (app.py) passes the room it decided on and it is honoured as-is.
+    rooms.py then decides what that room may read: whether the product index is
+    in scope at all, and whether filed client documents may be quoted. Passing
+    an excerpt to a room that is not client-aware does not make it one.
+    """
+    room = (room or classify(question).room).lower()
+    spec = get_room(room)
+    if not spec.include_clients:
+        client_excerpt = ""
+
     as_of = parse_as_of(question)
-    results = search(conn, lookup, as_of=as_of) or search(conn, question, as_of=as_of)
-    results = [(row, score) for row, score in results if _keep_source(room, row[1])]
+    results = []
+    if spec.allow_product_index:
+        lookup = rewrite_query(question, history)
+        drop = corpus_exclusions(room)
+        results = (search(conn, lookup, as_of=as_of, exclude_prefixes=drop)
+                   or search(conn, question, as_of=as_of, exclude_prefixes=drop))
+        results = [(row, score) for row, score in results if _keep_source(room, row[1])]
     if not results and not client_excerpt:
+        if not spec.allow_product_index:
+            return f"The {room} room does not answer from the product index.", []
         return "Nothing indexed for this room yet. File a lesson or run ingest.", []
 
     intent = query_intent(question)
@@ -64,13 +88,12 @@ def answer(conn, question, history=None, client_excerpt="", room="fa"):
             + client_excerpt[:12000]
             + "\n"
         )
-    doctrine = DOCTRINE.get(room, DOCTRINE["fa"])
     think_block = ""
     if os.environ.get("FORTITUDO_THINK", "").strip() in {"1", "true", "yes"}:
         thought = think(room, question, context + "\n" + (client_excerpt or ""))
         think_block = as_prompt_block(thought) + "\n"
     user = (
-        f"{doctrine}\n\n{ANSWER_SHAPE}\n\n{think_block}{prior}"
+        f"{ANSWER_SHAPE}\n\n{think_block}{prior}"
         f"Extracts (as_of={as_of}, intent={intent}):\n\n{context}\n"
         f"{client_block}"
         f"---\n\nQuestion: {question}\n\n"
@@ -78,8 +101,11 @@ def answer(conn, question, history=None, client_excerpt="", room="fa"):
         "If a fact is from a client file, name the file. "
         "If the extracts do not contain the answer, say so. Do not invent."
     )
+    # The room's own standard, doctrine and refusal — not one desk-wide prompt.
     raw = chat(expert_system(room), user)
     grounded, _missing = span_check(raw, context + "\n" + (client_excerpt or ""))
+    if spec.draft_banner and not grounded.lstrip().startswith(spec.draft_banner.strip()):
+        grounded = spec.draft_banner + grounded
     return grounded, results
 
 
@@ -109,7 +135,8 @@ def main():
         print()
         return
     if args.show:
-        for row, score in search(conn, args.show):
+        for row, score in search(conn, args.show,
+                                 exclude_prefixes=corpus_exclusions(args.room)):
             print(f"\n=== {row[1]} p.{row[2]}  (score {score:.4f}) ===")
             print(row[3][:1500])
         print()

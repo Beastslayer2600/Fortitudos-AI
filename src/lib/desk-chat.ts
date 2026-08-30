@@ -106,17 +106,17 @@ function looksLikeFactDump(text: string): boolean {
 
 function extractClientQuery(text: string): string {
   const forMatch = text.match(
-    /\b(?:for|client)\s+([A-Za-z][A-Za-z\s'\-]{1,50}?)(?:\s*[—\-:]|\s+fna|\s+form|\s+intake|[.?!,]|$)/i,
+    /\b(?:for|client)\s+([A-Za-z][A-Za-z\s'-]{1,50}?)(?:\s*[—\-:]|\s+fna|\s+form|\s+intake|[.?!,]|$)/i,
   );
   if (forMatch) return forMatch[1].trim();
 
   const withMatch = text.match(
-    /\bwith\s+([A-Za-z][A-Za-z\s'\-]{1,60}?)(?:\s+(?:at|on|tomorrow|today|for|via|on teams|teams|zoom)|[.?!,]|$)/i,
+    /\bwith\s+([A-Za-z][A-Za-z\s'-]{1,60}?)(?:\s+(?:at|on|tomorrow|today|for|via|on teams|teams|zoom)|[.?!,]|$)/i,
   );
   if (withMatch) return withMatch[1].trim();
 
   const meetMatch = text.match(
-    /\b(?:meeting|call|prep(?:are)?(?:\s+for)?)\s+([A-Za-z][A-Za-z\s'\-]{1,40}?)(?:\s+(?:at|on|tomorrow|today)|[.?!,]|$)/i,
+    /\b(?:meeting|call|prep(?:are)?(?:\s+for)?)\s+([A-Za-z][A-Za-z\s'-]{1,40}?)(?:\s+(?:at|on|tomorrow|today)|[.?!,]|$)/i,
   );
   if (meetMatch) return meetMatch[1].trim();
 

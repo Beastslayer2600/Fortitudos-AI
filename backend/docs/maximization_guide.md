@@ -69,7 +69,7 @@ Integrate the copy from `docs\website_copy_draft.md`:
 
 ## 4. Drama Workspace (Future Roadmap)
 Keep this separate but ready for a "Stage 2" launch:
-- Use `drama_app.py` for all adjudication research and notes.
+- Adjudication lives in the desk at `/adjudication`; the rubric and parsing code is `backend/drama_store.py`.
 - The same "Technical Rigor" applied to Liberty guides can be applied to adjudication rubrics (already started in `performance_psychology_2026.md`).
 - When launching, use the subdomain `performance.fortitudostudios.site` to maintain brand clarity.
 

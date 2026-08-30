@@ -20,7 +20,10 @@ from pathlib import Path
 from typing import List, Tuple, Generator, Optional, Any
 import sqlite3
 
-import pdfplumber
+try:
+    import pdfplumber
+except Exception:  # a broken install counts too; TXT and MD still ingest.
+    pdfplumber = None
 
 import store
 from llm import embed, health, has_model, OllamaError
@@ -38,6 +41,10 @@ def table_to_text(table: List[List[Optional[str]]]) -> str:
 
 
 def extract_pages(pdf_path: Path) -> Generator[Tuple[int, str], None, None]:
+    if pdfplumber is None:
+        raise RuntimeError(
+            "Reading PDFs needs pdfplumber. Run: pip install -r backend/requirements.txt"
+        )
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
             parts = []
@@ -210,6 +217,10 @@ def ingest_clients(conn: sqlite3.Connection, rebuild: bool = False) -> int:
         if not client_dir.exists():
             continue
         for doc_file in client_dir.rglob("*"):
+            # A draft the model wrote is not evidence; indexing it would let the
+            # next answer cite it back as if the adviser had filed it.
+            if client_store.AI_DRAFT_FOLDER in doc_file.parts:
+                continue
             if doc_file.is_file() and doc_file.suffix.lower() in {".pdf", ".txt", ".md"}:
                 source_name = f"client:{cid}:{doc_file.name}"
                 total += ingest_file(conn, doc_file, rebuild=rebuild, source_name=source_name)

@@ -125,7 +125,20 @@ def _rrf_fuse(rank_lists: List[List[int]], k: int = RRF_K) -> Dict[int, float]:
     return fused
 
 
+# Written by the model, not filed by a person. Advisor answers under FAIS, so
+# these stay out of its corpus; their own rooms still read them.
+MACHINE_WRITTEN_SOURCES = ("learn:craft:", "learn:sight:")
+
+# Rooms that answer as the adviser and must cite a filed page.
+ADVISER_ROOMS = ("fa", "roa")
+
+
+def corpus_exclusions(room: str) -> Tuple[str, ...]:
+    return MACHINE_WRITTEN_SOURCES if (room or "fa").lower() in ADVISER_ROOMS else ()
+
+
 def _mask(conn, rows, matrix, as_of: Optional[str]):
+    """Drop pages that were not in force on `as_of`."""
     if not as_of or not rows:
         return rows, matrix
     try:
@@ -142,9 +155,31 @@ def _mask(conn, rows, matrix, as_of: Optional[str]):
     return [rows[i] for i in keep], matrix[keep]
 
 
-def search(conn, query: str, top_k: int = TOP_K, as_of: Optional[str] = None) -> List[Tuple[Any, float]]:
+def _drop_prefixes(rows, matrix, exclude_prefixes: Tuple[str, ...]):
+    """Drop sources a room may not answer from, before anything is scored."""
+    if not exclude_prefixes or not rows:
+        return rows, matrix
+    keep = [i for i, r in enumerate(rows) if not str(r[1]).startswith(exclude_prefixes)]
+    if len(keep) == len(rows):
+        return rows, matrix
+    return [rows[i] for i in keep], (matrix[keep] if keep else matrix[:0])
+
+
+def search(
+    conn,
+    query: str,
+    top_k: int = TOP_K,
+    as_of: Optional[str] = None,
+    exclude_prefixes: Tuple[str, ...] = (),
+) -> List[Tuple[Any, float]]:
+    """Hybrid dense + BM25 retrieval with Reciprocal Rank Fusion.
+
+    Both filters run before scoring, so ranking never sees a page the room may
+    not use or one that was not yet in force.
+    """
     rows, matrix = store.load_all(conn)
     rows, matrix = _mask(conn, rows, matrix, as_of)
+    rows, matrix = _drop_prefixes(rows, matrix, exclude_prefixes)
     if not rows:
         return []
 

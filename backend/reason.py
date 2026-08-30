@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import List
 
 FIGURE_RE = re.compile(
