@@ -68,7 +68,9 @@ export const deskApi = {
   ask: (question: string, history: { role: string; content: string }[], clientId?: string, room?: string) =>
     json<{ answer: string; room: string; why: string; standard: string; refuse: string; sources: { source: string; page: number; score: number }[]; used_client_files: boolean }>("/api/ask", { method: "POST", body: JSON.stringify({ question, history, client_id: clientId || "", room: room || "" }) }),
   craftPage: (input: { name: string; city?: string; facts: string; url?: string }) =>
-    json<{ ok: boolean; slug: string; path: string; spec: Record<string, unknown>; missing: string[] }>("/api/craft/page", { method: "POST", body: JSON.stringify(input) }),
+    json<{ ok: boolean; slug: string; path: string; spec: Record<string, unknown>; missing: string[];
+      /** true when the model wrote the HTML; false when the gate refused it and the template ran. */
+      authored: boolean; author_notes: string[] }>("/api/craft/page", { method: "POST", body: JSON.stringify(input) }),
   consent: (identifier: string, action = "check") =>
     json<{ allowed: boolean; kind: string; reason: string; state: string }>("/api/consent", { method: "POST", body: JSON.stringify({ identifier, action }) }),
   fileClientDoc: (clientId: string, filename: string, contentBase64: string, docType = "Other") =>

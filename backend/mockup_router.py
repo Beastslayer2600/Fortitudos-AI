@@ -53,8 +53,12 @@ def generate_for_client(client_name: str, source_text: str, extra_brief: str = "
 
 
 def generate_for_lead(lead_name: str, brief: str, city: str = "Kempton Park",
-                      mock_url: str = "") -> dict:
-    """A Craft lead's page, flyer and spec. Takes a brief, never a client record."""
+                      mock_url: str = "", *, author_html: bool = True) -> dict:
+    """A Craft lead's page, flyer and spec. Takes a brief, never a client record.
+
+    `author_html=False` forces the deterministic template — useful when a
+    caller wants a page it can predict rather than one the model wrote.
+    """
     blob = f"{lead_name}\n{brief}"
     # Stricter than refuse_reason: a lead brief has no business containing
     # client-file language even when it also mentions the practice.
@@ -63,5 +67,6 @@ def generate_for_lead(lead_name: str, brief: str, city: str = "Kempton Park",
     # Through the design reasoner, not the bare renderer: it decides the
     # headline, intent and what to omit, and falls back to a deterministic
     # spec when no model is running.
-    return design_and_render(lead_name, blob, city=city, mock_url=mock_url)
+    return design_and_render(lead_name, blob, city=city, mock_url=mock_url,
+                             author_html=author_html)
 

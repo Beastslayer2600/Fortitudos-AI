@@ -112,10 +112,28 @@ def _clean_response(text: str) -> str:
     return cleaned
 
 
-def chat(system: str, user: str, temperature: Optional[float] = None) -> str:
-    """Single-turn chat completion. Low temperature - we want it literal."""
+def chat(system: str, user: str, temperature: Optional[float] = None,
+         num_predict: Optional[int] = None, num_ctx: Optional[int] = None,
+         timeout: int = TIMEOUT) -> str:
+    """Single-turn chat completion. Low temperature - we want it literal.
+
+    The three overrides exist for one job: writing a whole HTML document.
+
+    - `num_predict` raises the output cap. The desk default would cut a page
+      off mid-tag.
+    - `num_ctx` raises the window. Prompt and output share it, so a long
+      answer inside a small window slides the prompt out and the page comes
+      back corrupted rather than merely short. Raise it with num_predict,
+      never alone, and remember it costs RAM the model may not have.
+    - `timeout` buys the wall-clock the answer needs. At the 2-5 tokens/sec
+      this machine manages on CPU, a page is minutes of work, not seconds.
+    """
     if temperature is None:
         temperature = CHAT_TEMPERATURE
+    if num_predict is None:
+        num_predict = CHAT_NUM_PREDICT
+    if num_ctx is None:
+        num_ctx = CHAT_NUM_CTX
     # think=False: Qwen3-class models otherwise burn tokens on hidden reasoning
     # on CPU (and can exhaust num_predict before the answer). /no_think is a
     # second belt for models that ignore the API flag.
@@ -130,9 +148,9 @@ def chat(system: str, user: str, temperature: Optional[float] = None) -> str:
         "keep_alive": "30m",
         "options": {
             "temperature": temperature,
-            "num_ctx": CHAT_NUM_CTX,
-            "num_predict": CHAT_NUM_PREDICT,
+            "num_ctx": num_ctx,
+            "num_predict": num_predict,
         },
     }
-    data = _post("/api/chat", payload)
+    data = _post("/api/chat", payload, timeout=timeout)
     return _clean_response(data.get("message", {}).get("content", ""))

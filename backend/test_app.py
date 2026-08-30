@@ -7,7 +7,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import app
@@ -476,6 +476,319 @@ class ClientMockupsTakeABriefOnly(unittest.TestCase):
         self.assertNotIn("HUSH", seen["brief"])
         self.assertNotIn("4,200,000", seen["brief"])
         self.assertIn("calm, one CTA", seen["brief"])
+
+
+GOOD_PAGE = """<!DOCTYPE html>
+<!-- INTERNAL MOCKUP — adviser review required; not live. -->
+<html lang="en-ZA"><head><meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow"><style>body{margin:0}</style></head>
+<body><h1>Burst pipe in Kempton Park</h1>
+<p>Internal mockup · not live</p>
+<a href="tel:0119751234">011 975 1234</a>
+<p>Open 08:00-17:00</p></body></html>"""
+
+
+class TheGateOnModelWrittenHtml(unittest.TestCase):
+    """The model may write the page. It may not write the facts."""
+
+    ALLOWED = "Joe Plumbing\nKempton Park\n011 975 1234\n08:00-17:00"
+
+    def gate(self, html, allowed=None):
+        import html_author
+        return html_author.gate(html, allowed if allowed is not None else self.ALLOWED)
+
+    def test_an_honest_page_passes(self):
+        self.assertTrue(self.gate(GOOD_PAGE).ok, self.gate(GOOD_PAGE).problems)
+
+    def test_a_truncated_document_is_refused(self):
+        # The single most likely model failure: the token budget runs out.
+        v = self.gate(GOOD_PAGE[: len(GOOD_PAGE) // 2])
+        self.assertFalse(v.ok)
+        self.assertTrue(any("truncated" in p for p in v.problems), v.problems)
+
+    def test_an_invented_phone_number_is_refused(self):
+        v = self.gate(GOOD_PAGE.replace("011 975 1234", "082 555 9000"))
+        self.assertFalse(v.ok)
+        self.assertTrue(any("phone not in the brief" in p for p in v.problems), v.problems)
+
+    def test_an_invented_price_is_refused(self):
+        v = self.gate(GOOD_PAGE.replace("<p>Open", "<p>Callout from R450.</p><p>Open"))
+        self.assertFalse(v.ok)
+        self.assertTrue(any("price not in the brief" in p for p in v.problems), v.problems)
+
+    def test_invented_hours_are_refused(self):
+        v = self.gate(GOOD_PAGE.replace("08:00-17:00", "06:00-22:00"))
+        self.assertFalse(v.ok)
+        self.assertTrue(any("time not in the brief" in p for p in v.problems), v.problems)
+
+    def test_an_invented_year_is_refused(self):
+        v = self.gate(GOOD_PAGE.replace("<p>Open", "<p>Serving Kempton Park since 1998.</p><p>Open"))
+        self.assertFalse(v.ok)
+        self.assertTrue(any("year not in the brief" in p for p in v.problems), v.problems)
+
+    def test_unearned_claims_are_refused(self):
+        for claim in ["Open 24/7", "Award-winning service", "Best in Gauteng", "5-star rated"]:
+            v = self.gate(GOOD_PAGE.replace("<p>Open", f"<p>{claim}</p><p>Open"))
+            self.assertFalse(v.ok, claim)
+            self.assertTrue(any("unearned claim" in p for p in v.problems), claim)
+
+    def test_script_form_and_handlers_are_refused(self):
+        for bad, why in [
+            ("<script>fetch('/x')</script>", "<script>"),
+            ("<iframe src='//x'></iframe>", "<iframe>"),
+            ("<form action='/x'></form>", "<form>"),
+            ("<a onclick='x()'>Call</a>", "inline event handler"),
+            ("<a href='javascript:x()'>Call</a>", "javascript:"),
+        ]:
+            v = self.gate(GOOD_PAGE.replace("</body>", bad + "</body>"))
+            self.assertFalse(v.ok, bad)
+            self.assertTrue(any(why in p for p in v.problems), (bad, v.problems))
+
+    def test_a_mockup_must_say_it_is_a_mockup(self):
+        stripped = GOOD_PAGE.replace(
+            "<!-- INTERNAL MOCKUP — adviser review required; not live. -->", ""
+        ).replace("Internal mockup · not live", "")
+        v = self.gate(stripped)
+        self.assertFalse(v.ok)
+        self.assertTrue(any("INTERNAL MOCKUP" in p for p in v.problems), v.problems)
+
+    def test_a_mockup_must_be_noindex(self):
+        v = self.gate(GOOD_PAGE.replace('content="noindex,nofollow"', 'content="index,follow"'))
+        self.assertFalse(v.ok)
+        self.assertIn("missing noindex", v.problems)
+
+    def test_a_live_page_needs_no_mockup_marker(self):
+        import html_author
+        stripped = GOOD_PAGE.replace(
+            "<!-- INTERNAL MOCKUP — adviser review required; not live. -->", ""
+        ).replace('<meta name="robots" content="noindex,nofollow">', "")
+        self.assertTrue(html_author.gate(stripped, self.ALLOWED, live=True).ok)
+
+    def test_facts_inside_style_and_head_are_not_read_as_claims(self):
+        # A CSS rule is not a promise. Only visible text is judged.
+        v = self.gate(GOOD_PAGE.replace("body{margin:0}", "body{margin:0;line-height:1.24}"))
+        self.assertTrue(v.ok, v.problems)
+
+
+class TheAuthorFallsBackRatherThanShipJunk(unittest.TestCase):
+    """A page always comes out. A wrong one never does."""
+
+    def _stub(self, reply):
+        import llm
+        real = llm.chat
+        llm.chat = lambda *a, **kw: reply
+        return real
+
+    def test_a_rejected_page_returns_none_with_reasons(self):
+        import llm, html_author
+        from trade_page import facts_from_text
+        real = self._stub("<html><body>Call 082 555 9000</body></html>")
+        try:
+            page, notes = html_author.author(
+                facts_from_text("Joe Plumbing", "Geyser repairs 011 975 1234"),
+                brief="Geyser repairs 011 975 1234")
+        finally:
+            llm.chat = real
+        self.assertIsNone(page)
+        self.assertTrue(notes)
+
+    def test_an_unreachable_model_is_reported_not_raised(self):
+        import llm, html_author
+        from trade_page import facts_from_text
+
+        def boom(*a, **kw):
+            raise OSError("ollama is not running")
+
+        real = llm.chat
+        llm.chat = boom
+        try:
+            page, notes = html_author.author(facts_from_text("Joe Plumbing", ""), brief="")
+        finally:
+            llm.chat = real
+        self.assertIsNone(page)
+        self.assertTrue(any("model unavailable" in n for n in notes), notes)
+
+    def test_an_accepted_page_is_returned_verbatim(self):
+        import llm, html_author
+        from trade_page import facts_from_text
+        real = self._stub("```html\n" + GOOD_PAGE + "\n```")
+        try:
+            page, notes = html_author.author(
+                facts_from_text("Joe Plumbing", "Geyser repairs 011 975 1234 08:00-17:00"),
+                brief="Geyser repairs 011 975 1234 08:00-17:00")
+        finally:
+            llm.chat = real
+        self.assertIsNotNone(page)
+        self.assertTrue(page.startswith("<!DOCTYPE html>"), page[:40])
+        self.assertTrue(any("model wrote the page" in n for n in notes), notes)
+
+    def test_the_request_asks_for_room_to_write_a_whole_page(self):
+        """A page does not fit in the desk defaults. Assert what Ollama is sent.
+
+        num_predict alone is not enough: prompt and answer share num_ctx, so a
+        long answer in a small window corrupts the page instead of shortening
+        it, and the desk's 300s timeout aborts it before either matters.
+        """
+        import llm, html_author, config
+        from trade_page import facts_from_text
+        sent = {}
+        real = llm._post
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT: sent.update(
+            payload=payload, timeout=timeout) or {"message": {"content": GOOD_PAGE}}
+        try:
+            html_author.author(facts_from_text("Joe Plumbing", ""), brief="")
+        finally:
+            llm._post = real
+        opts = sent["payload"]["options"]
+        self.assertEqual(opts["num_predict"], html_author.HTML_NUM_PREDICT)
+        self.assertEqual(opts["num_ctx"], html_author.HTML_NUM_CTX)
+        self.assertGreater(opts["num_predict"], config.CHAT_NUM_PREDICT * 4)
+        self.assertGreater(opts["num_ctx"], opts["num_predict"])
+        self.assertEqual(sent["timeout"], html_author.HTML_TIMEOUT)
+        self.assertGreater(sent["timeout"], llm.TIMEOUT)
+
+    def test_the_desk_default_call_is_unchanged(self):
+        """Raising the cap for pages must not raise it for every answer."""
+        import llm, config
+        sent = {}
+        real = llm._post
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT: sent.update(
+            payload=payload, timeout=timeout) or {"message": {"content": "hi"}}
+        try:
+            llm.chat("sys", "user")
+        finally:
+            llm._post = real
+        self.assertEqual(sent["payload"]["options"]["num_predict"], config.CHAT_NUM_PREDICT)
+        self.assertEqual(sent["payload"]["options"]["num_ctx"], config.CHAT_NUM_CTX)
+        self.assertEqual(sent["timeout"], llm.TIMEOUT)
+
+    def test_authoring_can_be_switched_off_on_a_thin_machine(self):
+        import html_author
+        real = html_author.ENABLED
+        html_author.ENABLED = False
+        try:
+            from trade_page import facts_from_text
+            page, notes = html_author.author(facts_from_text("Joe", ""), brief="")
+        finally:
+            html_author.ENABLED = real
+        self.assertIsNone(page)
+        self.assertTrue(any("off" in n for n in notes), notes)
+
+    def test_a_refused_page_still_leaves_a_page_on_disk(self):
+        import mockup_router
+        out = mockup_router.generate_for_lead(
+            "Joe Plumbing", "Geyser repairs Kempton Park 011 975 1234",
+            author_html=False)
+        self.assertFalse(out["authored"])
+        self.assertIn("INTERNAL MOCKUP", out["page"])
+
+    def test_the_answer_says_who_wrote_the_page(self):
+        """A silent downgrade to the template would be indistinguishable."""
+        import mockup_router
+        out = mockup_router.generate_for_lead(
+            "Joe Plumbing", "Geyser repairs Kempton Park 011 975 1234")
+        self.assertIn("authored", out)
+        self.assertIn("author_notes", out)
+
+
+
+MODEL_PAGE = """<!DOCTYPE html>
+<!-- INTERNAL MOCKUP - adviser review required; not live. -->
+<html lang="en-ZA"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Joe Plumbing</title>
+<style>:root{--acc:#c8102e}body{margin:0;font:16px/1.5 system-ui,sans-serif}
+.bar{position:fixed;bottom:0;left:0;right:0}@media print{.bar{display:none}}</style>
+</head><body>
+<header><h1>Burst pipe or cold geyser - call us in Kempton Park</h1>
+<p>Internal mockup - not live</p></header>
+<a href="tel:0119751234">Call PHONE_HERE</a>
+<main><p>Phone: PHONE_HERE</p><p>Hours: [HOURS]</p></main>
+<div class="bar"><a href="tel:0119751234">Call</a></div>
+</body></html>"""
+
+
+class AStubOllama(BaseHTTPRequestHandler):
+    """Answers design_reason with JSON and html_author with a page."""
+
+    page = MODEL_PAGE.replace("PHONE_HERE", "011 975 1234")
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"] or 0)))
+        if "web developer" in body["messages"][0]["content"]:
+            out = type(self).page
+        else:
+            out = json.dumps({"headline": "Burst pipe or cold geyser - call us in Kempton Park",
+                              "lead": "Call or WhatsApp.", "intent": "emergency"})
+        raw = json.dumps({"message": {"content": out}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+
+class TheModelWritesTheServedPage(unittest.TestCase):
+    """End to end: POST a brief, and read back what /m/<slug> actually serves."""
+
+    BRIEF = "Geyser repairs and burst pipes in Kempton Park. Phone 011 975 1234."
+
+    @classmethod
+    def setUpClass(cls):
+        import desk_extra, llm
+        cls.ollama = ThreadingHTTPServer(("127.0.0.1", 0), AStubOllama)
+        threading.Thread(target=cls.ollama.serve_forever, daemon=True).start()
+        cls._host = llm.OLLAMA_HOST
+        llm.OLLAMA_HOST = f"http://127.0.0.1:{cls.ollama.server_address[1]}"
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls._mocks = desk_extra.MOCK_DIR
+        desk_extra.MOCK_DIR = Path(cls.tmp.name) / "mocks"
+
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        import desk_extra, llm
+        llm.OLLAMA_HOST = cls._host
+        desk_extra.MOCK_DIR = cls._mocks
+        cls.server.shutdown()
+        cls.ollama.shutdown()
+        cls.tmp.cleanup()
+
+    def build(self):
+        return request(self.server, "/api/craft/page", method="POST",
+                       body={"name": "Joe Plumbing", "facts": self.BRIEF,
+                             "city": "Kempton Park"})
+
+    def served(self, path):
+        url = f"http://127.0.0.1:{self.server.server_address[1]}{path}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return resp.read().decode()
+
+    def test_a_page_the_model_wrote_is_the_page_that_is_served(self):
+        AStubOllama.page = MODEL_PAGE.replace("PHONE_HERE", "011 975 1234")
+        status, _, out = self.build()
+        self.assertEqual(status, 200)
+        self.assertTrue(out["authored"], out["author_notes"])
+        page = self.served(out["path"])
+        self.assertIn("--acc:#c8102e", page, "this is the template, not the model's page")
+        self.assertIn("INTERNAL MOCKUP", page)
+
+    def test_a_page_that_invents_a_phone_number_never_reaches_the_slug(self):
+        AStubOllama.page = MODEL_PAGE.replace("PHONE_HERE", "082 555 9000")
+        status, _, out = self.build()
+        self.assertEqual(status, 200)
+        self.assertFalse(out["authored"])
+        self.assertTrue(any("phone" in n for n in out["author_notes"]), out["author_notes"])
+        page = self.served(out["path"])
+        self.assertNotIn("082 555 9000", page)
+        self.assertIn("INTERNAL MOCKUP", page)
+
 
 
 if __name__ == "__main__":
