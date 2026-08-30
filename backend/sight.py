@@ -14,10 +14,10 @@ INTENTS = {
     "chat": "Extra context. Quote what is visible. Say if unreadable.",
 }
 
-def _vision_model():
+def _vision_model(host=""):
     try:
         import urllib.request
-        req = urllib.request.Request(f"{OLLAMA_HOST}/api/tags", method="GET")
+        req = urllib.request.Request(f"{host or OLLAMA_HOST}/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         names = [m.get("name", "") for m in data.get("models", [])]
@@ -30,14 +30,19 @@ def _vision_model():
     return None
 
 def describe_image(image_b64, caption, intent):
-    model = _vision_model()
-    job = INTENTS.get(intent, INTENTS["chat"])
-    prompt = f"{job}\n\nAdviser note: {caption or '(none)'}\n\nWHAT IS ON SCREEN / FACTS / GAPS. Never invent a phone number or opening hours."
+    # A shop-sign photo is Craft work and may go to the fast box. Every other
+    # intent can be a client's screen, so it is routed as client data and
+    # compute.resolve pins it to this machine.
+    import compute
+    plan = compute.resolve("craft" if intent in ("craft", "idea") else "sight", OLLAMA_HOST)
+    model = _vision_model(plan.host)
+    instruction = INTENTS.get(intent, INTENTS["chat"])
+    prompt = f"{instruction}\n\nAdviser note: {caption or '(none)'}\n\nWHAT IS ON SCREEN / FACTS / GAPS. Never invent a phone number or opening hours."
     if not model:
         return f"(No vision model. Caption only.)\n{caption or 'Screenshot filed.'}\nRun: ollama pull moondream"
     import urllib.request
     body = json.dumps({"model": model, "prompt": prompt, "images": [image_b64], "stream": False, "options": {"temperature": 0.1, "num_predict": 400}}).encode()
-    req = urllib.request.Request(f"{OLLAMA_HOST}/api/generate", data=body, headers={"Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(f"{plan.host}/api/generate", data=body, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=180) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     return (payload.get("response") or "").strip()

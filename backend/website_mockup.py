@@ -342,7 +342,7 @@ Optional extracts from client documents (do not invent beyond this):
 
 {JSON_SCHEMA_HINT}
 """
-    raw = chat(MOCKUP_SYSTEM, user, temperature=0.25)
+    raw = chat(MOCKUP_SYSTEM, user, temperature=0.25, job="mockup")
     data = _extract_json(raw)
     # Soft-fill defaults
     data.setdefault("brand_name", practice_defaults.get("brand_name", "Fortitudo Wealth"))

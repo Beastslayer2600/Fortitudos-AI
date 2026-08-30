@@ -157,7 +157,7 @@ def think(room: str, question: str, extracts: str = "") -> Thought:
     )
     try:
         from llm import chat
-        raw = chat(SYSTEM, user, temperature=0.15)
+        raw = chat(SYSTEM, user, temperature=0.15, job=room)
         data = _extract_json(raw)
     except Exception:
         return fallback_thought(room, question)

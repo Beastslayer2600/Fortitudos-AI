@@ -41,7 +41,11 @@ export const deskApi = {
   get base() {
     return getApiBase();
   },
-  status: () => json<{ ok: boolean; models: string[]; sources: { name: string; pages: number }[] }>("/api/status"),
+  status: () => json<{ ok: boolean; models: string[]; sources: { name: string; pages: number }[];
+      /** Which machine answers which job. `pinned_local` means the desk refused to
+       *  send that job to the configured host because it can carry client data. */
+      compute: { job: string; model: string; host: string; client_data: boolean;
+                 pinned_local: boolean; why: string }[] }>("/api/status"),
   learn: () =>
     json<{ docs: { name: string; kind: string; bytes: number }[]; sources: { name: string; pages: number }[]; how: string[] }>("/api/learn"),
   selfLearnStatus: () =>

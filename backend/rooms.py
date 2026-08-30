@@ -12,6 +12,17 @@ class Room:
     include_clients: bool
     allow_product_index: bool
     draft_banner: str
+    # Can a prompt from this room contain client data? compute.py uses this to
+    # decide whether the room may be answered by a model on another machine.
+    #
+    # `include_clients` is not the same question. It says whether the room
+    # attaches a client file on purpose. This says whether client data can end
+    # up in the prompt at all — and in an adviser room the adviser's own typed
+    # question is enough. Only Craft is False, because a Craft brief is a shop
+    # owner's advert and mockup_router refuses one that reads like a client
+    # file. Everything else is True, including Learn: a typed lesson can say
+    # anything. Assume yes unless the room makes it impossible.
+    carries_client_data: bool = True
 
 
 ROOMS = {
@@ -24,7 +35,7 @@ ROOMS = {
         "INTERNAL DRAFT — ADVISER REVIEW REQUIRED\n",
     ),
     "voice": Room("voice", "voice", False, False, ""),
-    "craft": Room("craft", "craft", False, False, ""),
+    "craft": Room("craft", "craft", False, False, "", carries_client_data=False),
     "drama": Room("drama", "drama", False, False, ""),
     "learn": Room("learn", "learn", False, False, ""),
 }

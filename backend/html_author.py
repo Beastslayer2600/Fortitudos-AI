@@ -171,7 +171,7 @@ def author(facts, spec=None, brief: str = "", *, live: bool = False,
         try:
             raw = chat(SYSTEM, user, temperature=0.2,
                        num_predict=HTML_NUM_PREDICT, num_ctx=HTML_NUM_CTX,
-                       timeout=HTML_TIMEOUT)
+                       timeout=HTML_TIMEOUT, job="craft")
         except Exception as exc:
             return None, [f"model unavailable: {exc}"]
         html = _strip_fences(raw)

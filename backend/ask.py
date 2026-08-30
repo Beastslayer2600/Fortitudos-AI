@@ -102,7 +102,7 @@ def answer(conn, question, history=None, client_excerpt="", room=""):
         "If the extracts do not contain the answer, say so. Do not invent."
     )
     # The room's own standard, doctrine and refusal — not one desk-wide prompt.
-    raw = chat(expert_system(room), user)
+    raw = chat(expert_system(room), user, job=room)
     grounded, _missing = span_check(raw, context + "\n" + (client_excerpt or ""))
     if spec.draft_banner and not grounded.lstrip().startswith(spec.draft_banner.strip()):
         grounded = spec.draft_banner + grounded

@@ -1,6 +1,7 @@
 """HTTP layer: CORS origin rules and the Learn routes the desk UI calls."""
 import base64
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -633,8 +634,8 @@ class TheAuthorFallsBackRatherThanShipJunk(unittest.TestCase):
         from trade_page import facts_from_text
         sent = {}
         real = llm._post
-        llm._post = lambda path, payload, timeout=llm.TIMEOUT: sent.update(
-            payload=payload, timeout=timeout) or {"message": {"content": GOOD_PAGE}}
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT, host="": sent.update(
+            payload=payload, timeout=timeout, host=host) or {"message": {"content": GOOD_PAGE}}
         try:
             html_author.author(facts_from_text("Joe Plumbing", ""), brief="")
         finally:
@@ -652,8 +653,8 @@ class TheAuthorFallsBackRatherThanShipJunk(unittest.TestCase):
         import llm, config
         sent = {}
         real = llm._post
-        llm._post = lambda path, payload, timeout=llm.TIMEOUT: sent.update(
-            payload=payload, timeout=timeout) or {"message": {"content": "hi"}}
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT, host="": sent.update(
+            payload=payload, timeout=timeout, host=host) or {"message": {"content": "hi"}}
         try:
             llm.chat("sys", "user")
         finally:
@@ -788,6 +789,137 @@ class TheModelWritesTheServedPage(unittest.TestCase):
         page = self.served(out["path"])
         self.assertNotIn("082 555 9000", page)
         self.assertIn("INTERNAL MOCKUP", page)
+
+
+
+LAN = "http://192.168.1.50:11434"
+HERE = "http://127.0.0.1:11434"
+
+
+class ClientDataStaysOnThisMachine(unittest.TestCase):
+    """Pointing the desk at a faster box must not put client files on the LAN."""
+
+    def setUp(self):
+        import compute
+        self.compute = compute
+        self._allow = compute.ALLOW_REMOTE_CLIENT_DATA
+        self._env = dict(os.environ)
+
+    def tearDown(self):
+        self.compute.ALLOW_REMOTE_CLIENT_DATA = self._allow
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def test_craft_may_run_on_another_machine(self):
+        plan = self.compute.resolve("craft", LAN)
+        self.assertEqual(plan.host, LAN)
+        self.assertFalse(plan.carries_client_data)
+
+    def test_every_other_job_is_pinned_back_to_this_machine(self):
+        for job in ["fa", "roa", "voice", "drama", "learn", "filing", "sight"]:
+            plan = self.compute.resolve(job, LAN)
+            self.assertTrue(plan.pinned_local, job)
+            self.assertTrue(self.compute.is_local(plan.host), (job, plan.host))
+
+    def test_an_unnamed_job_is_pinned_too(self):
+        """Forgetting to name a job must fail safe, not fast."""
+        for job in ["", "something_new", "toaster"]:
+            self.assertTrue(self.compute.resolve(job, LAN).pinned_local, job)
+
+    def test_the_pin_says_why_and_how_to_lift_it(self):
+        why = self.compute.resolve("roa", LAN).why
+        self.assertIn(LAN, why)
+        self.assertIn("FORTITUDO_ALLOW_REMOTE_CLIENT_DATA", why)
+
+    def test_the_operator_can_opt_out_deliberately(self):
+        self.compute.ALLOW_REMOTE_CLIENT_DATA = True
+        self.assertEqual(self.compute.resolve("roa", LAN).host, LAN)
+
+    def test_nothing_is_pinned_when_the_host_is_already_local(self):
+        for job in ["fa", "roa", "filing"]:
+            self.assertFalse(self.compute.resolve(job, HERE).pinned_local, job)
+
+    def test_a_host_that_cannot_be_read_is_not_treated_as_local(self):
+        for host in ["", "not a url", "http://", "http://evil.example.com",
+                     "http://127.0.0.1.evil.com", "http://0.0.0.0:11434"]:
+            self.assertFalse(self.compute.is_local(host), host)
+
+    def test_loopback_spellings_are_local(self):
+        for host in ["http://127.0.0.1:11434", "http://localhost:11434",
+                     "http://[::1]:11434", "127.0.0.1:11434"]:
+            self.assertTrue(self.compute.is_local(host), host)
+
+    def test_a_job_can_be_given_its_own_model(self):
+        os.environ["FORTITUDO_CRAFT_MODEL"] = "qwen2.5-coder:7b"
+        self.assertEqual(self.compute.resolve("craft", HERE).model, "qwen2.5-coder:7b")
+        import config
+        self.assertEqual(self.compute.resolve("fa", HERE).model, config.CHAT_MODEL)
+
+    def test_a_job_can_be_given_its_own_host(self):
+        os.environ["FORTITUDO_CRAFT_HOST"] = LAN
+        self.assertEqual(self.compute.resolve("craft", HERE).host, LAN)
+        self.assertEqual(self.compute.resolve("fa", HERE).host, HERE)
+
+    def test_a_per_job_host_cannot_smuggle_client_data_out(self):
+        """The pin is on the job, not on where the host came from."""
+        os.environ["FORTITUDO_ROA_HOST"] = LAN
+        plan = self.compute.resolve("roa", HERE)
+        self.assertTrue(plan.pinned_local)
+        self.assertTrue(self.compute.is_local(plan.host))
+
+
+class EveryModelCallNamesItsJob(unittest.TestCase):
+    """A call with no job is routed as client data, so an unlabelled one is a bug."""
+
+    def test_the_client_carrying_call_sites_are_labelled(self):
+        import inspect, app, sort_engine, ask
+        self.assertIn('job="filing"', inspect.getsource(sort_engine.SortEngine._classify))
+        self.assertIn('job="roa"', inspect.getsource(app.Handler))
+        self.assertIn("job=room", inspect.getsource(ask.answer))
+
+    def test_no_chat_call_in_the_backend_is_unlabelled(self):
+        import pathlib, re
+        root = pathlib.Path(__file__).parent
+        misses = []
+        for py in sorted(root.glob("*.py")):
+            if py.name.startswith("test_") or py.name in {"llm.py", "compute.py"}:
+                continue
+            src = py.read_text(encoding="utf-8")
+            for call in re.findall(r"\bchat\(\s*[A-Z_]+\w*\s*,.*?\)", src, re.S):
+                if "job=" not in call:
+                    misses.append(f"{py.name}: {call[:60]}")
+        self.assertEqual(misses, [], "these calls would be routed as client data")
+
+    def test_chat_sends_craft_to_the_fast_box_and_roa_to_this_one(self):
+        """The whole point, exercised through llm.chat rather than resolve()."""
+        import llm
+        lan = "http://192.168.1.50:11434"
+        seen = []
+        real = llm._post
+        env = dict(os.environ)
+        os.environ["FORTITUDO_CRAFT_HOST"] = lan
+        os.environ["FORTITUDO_CRAFT_MODEL"] = "qwen2.5-coder:7b"
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT, host="": seen.append(
+            (host, payload["model"])) or {"message": {"content": "x"}}
+        try:
+            llm.chat("sys", "brief", job="craft")
+            llm.chat("sys", "client file", job="roa")
+            llm.chat("sys", "unlabelled")
+        finally:
+            llm._post = real
+            os.environ.clear()
+            os.environ.update(env)
+        import compute, config
+        self.assertEqual(seen[0], (lan, "qwen2.5-coder:7b"), "craft should use the fast box")
+        for host, model in seen[1:]:
+            self.assertTrue(compute.is_local(host), host)
+            self.assertEqual(model, config.CHAT_MODEL)
+
+    def test_health_reports_where_each_job_runs(self):
+        import compute, llm
+        jobs = {p.job for p in compute.plans(llm.OLLAMA_HOST)}
+        for expected in ["fa", "roa", "craft", "filing", "sight"]:
+            self.assertIn(expected, jobs)
 
 
 

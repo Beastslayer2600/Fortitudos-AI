@@ -94,7 +94,7 @@ def reason(facts: TradeFacts) -> DesignSpec:
     )
     try:
         from llm import chat
-        raw = chat(SYSTEM, user, temperature=0.2)
+        raw = chat(SYSTEM, user, temperature=0.2, job="craft")
         data = _extract_json(raw)
     except Exception:
         return fallback_spec(facts)
