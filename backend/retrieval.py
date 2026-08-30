@@ -1,12 +1,4 @@
-"""
-Fortitudo AI — hybrid retrieval (dense + BM25 + Reciprocal Rank Fusion)
-
-Research basis (2025–2026 financial RAG):
-- Page-level chunks are a strong default for technical PDFs and stable citations.
-- Dense alone misses rare clinical/legal tokens (otosclerosis, tympanosclerosis).
-- BM25 alone misses paraphrase. Hybrid + RRF is the production default.
-- RRF merges by rank (score-scale agnostic): score = sum 1/(k + rank).
-"""
+"""Hybrid retrieval (dense + BM25 + RRF). Optional as-of mask first."""
 from __future__ import annotations
 
 import math
@@ -19,6 +11,7 @@ import numpy as np
 import store
 from llm import embed
 from config import TOP_K, KEYWORD_BOOST, MAX_PAGE_CHARS
+from versioning import in_force
 
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-']{1,}", re.I)
 
@@ -36,9 +29,7 @@ STOPWORDS = {
     "client", "adviser", "please", "tell", "me", "under", "does", "pay",
 }
 
-# Domain synonyms expand sparse match for SA risk-product language without an LLM call.
 SYNONYMS = {
-    # Risk / clinical (FA product tables)
     "hearing": ["deafness", "deaf", "audiometry", "otosclerosis", "tympanosclerosis"],
     "deafness": ["hearing", "deaf"],
     "blindness": ["vision", "sight", "ocular", "eye"],
@@ -50,12 +41,10 @@ SYNONYMS = {
     "survival": ["waiting", "deferment"],
     "retrenchment": ["redundancy", "retrenched"],
     "severity": ["tier", "percentage", "payout"],
-    # FAIS / process
     "fica": ["identity", "kyc", "verification"],
     "fna": ["needs", "analysis"],
     "roa": ["record", "advice"],
     "replacement": ["switching", "replaced"],
-    # Drama / eisteddfod (Stage 2)
     "monologue": ["solo", "speech", "character"],
     "duologue": ["dialogue", "samespraak"],
     "eisteddfod": ["allegretto", "festival", "competition"],
@@ -65,7 +54,7 @@ SYNONYMS = {
 }
 
 RRF_K = 60
-CANDIDATE_POOL = 24  # retrieve more, fuse, then cut to TOP_K
+CANDIDATE_POOL = 24
 
 
 def tokenize(text: str) -> List[str]:
@@ -84,8 +73,6 @@ def expand_query_tokens(tokens: List[str]) -> List[str]:
 
 
 class BM25Index:
-    """Okapi BM25 over in-memory page texts. Rebuilt when the vector cache refreshes."""
-
     def __init__(self, k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
         self.b = b
@@ -119,11 +106,7 @@ class BM25Index:
                 continue
             idf = math.log(1 + (self.N - df + 0.5) / (df + 0.5))
             for i, doc in enumerate(self.docs):
-                # count occurrences
-                tf = 0
-                for w in doc:
-                    if w == term:
-                        tf += 1
+                tf = sum(1 for w in doc if w == term)
                 if tf == 0:
                     continue
                 denom = tf + self.k1 * (1 - self.b + self.b * self.doc_len[i] / self.avgdl)
@@ -142,31 +125,44 @@ def _rrf_fuse(rank_lists: List[List[int]], k: int = RRF_K) -> Dict[int, float]:
     return fused
 
 
-def search(conn, query: str, top_k: int = TOP_K) -> List[Tuple[Any, float]]:
-    """Hybrid dense + BM25 retrieval with Reciprocal Rank Fusion."""
+def _mask(conn, rows, matrix, as_of: Optional[str]):
+    if not as_of or not rows:
+        return rows, matrix
+    try:
+        meta = store.page_meta(conn)
+    except Exception:
+        return rows, matrix
+    keep = []
+    for i, r in enumerate(rows):
+        ef, et, _dom = meta.get(r[0], ("", "", ""))
+        if in_force(ef, et, as_of):
+            keep.append(i)
+    if not keep or len(keep) == len(rows):
+        return rows, matrix
+    return [rows[i] for i in keep], matrix[keep]
+
+
+def search(conn, query: str, top_k: int = TOP_K, as_of: Optional[str] = None) -> List[Tuple[Any, float]]:
     rows, matrix = store.load_all(conn)
+    rows, matrix = _mask(conn, rows, matrix, as_of)
     if not rows:
         return []
 
     texts = [r[3] for r in rows]
     _BM25.build(texts, fingerprint=len(rows) ^ (hash(texts[0][:80]) if texts else 0))
 
-    # Dense
     qvec = np.asarray(embed(query)[0], dtype=np.float32)
     qnorm = np.linalg.norm(qvec) or 1.0
     dense_scores = matrix @ (qvec / qnorm)
 
-    # BM25 with light query expansion
     q_tokens = expand_query_tokens(tokenize(query))
     bm25_scores = _BM25.scores(q_tokens)
 
     pool = min(CANDIDATE_POOL, len(rows))
     dense_rank = list(np.argsort(-dense_scores)[:pool])
     bm25_rank = list(np.argsort(-bm25_scores)[:pool]) if bm25_scores.size else []
-
     fused = _rrf_fuse([dense_rank, bm25_rank])
 
-    # Mild extra boost when query tokens appear literally (table labels, product names)
     if q_tokens:
         for i, r in enumerate(rows):
             if i not in fused:
