@@ -6,9 +6,9 @@ import os
 import re
 from pathlib import Path
 
-from config import DATA_DIR, DOCS_DIR
+from config import DOCS_DIR, LOCAL_BASE, MOCKS_DIR, PUBLIC_BASE
 
-MOCK_DIR = DATA_DIR / "mocks"
+MOCK_DIR = MOCKS_DIR
 SHELF_SUFFIXES = {".pdf", ".md", ".txt"}
 MAX_GUIDE_BYTES = 25 * 1024 * 1024
 DESK_BUILD = "wire3-2026-08-29"
@@ -20,7 +20,7 @@ def _slug(name: str) -> str:
 
 
 def public_base() -> str:
-    return (os.environ.get("FORTITUDO_PUBLIC_BASE") or "").rstrip("/")
+    return PUBLIC_BASE
 
 
 def _is_public(url: str) -> bool:
@@ -153,16 +153,9 @@ def handle_post(handler, parts, body) -> bool:
         handler.send_json({"ok": True, "pages": pages or 1, "topic": topic, "source": str(path)})
         return True
     if parts == ["api", "craft", "page"]:
-        from crossover import CLIENT_FILE
-        from design_reason import design_and_render
+        import mockup_router
         name = str(body.get("name") or "Shop").strip()
         facts = str(body.get("facts") or body.get("brief") or "").strip()
-        # Craft leads and advice clients never share a record.
-        if CLIENT_FILE.search(f"{name}\n{facts}"):
-            raise ValueError(
-                "This reads like a client file. A Craft lead is a shop owner, "
-                "not an advice client — do not paste client documents into a brief."
-            )
         city = str(body.get("city") or "Kempton Park").strip()
         public = str(body.get("url") or public_base()).strip()
         MOCK_DIR.mkdir(parents=True, exist_ok=True)
@@ -172,8 +165,10 @@ def handle_post(handler, parts, body) -> bool:
             if not mock_url.endswith(slug):
                 mock_url = mock_url + "/m/" + slug
         else:
-            mock_url = "http://127.0.0.1:8000/m/" + slug
-        out = design_and_render(name, facts, city, mock_url)
+            mock_url = f"{LOCAL_BASE}/m/{slug}"
+        # Craft leads and advice clients never share a record; the router refuses
+        # a brief carrying client-file language.
+        out = mockup_router.generate_for_lead(name, facts, city=city, mock_url=mock_url)
         (MOCK_DIR / f"{slug}.html").write_text(out["page"], encoding="utf-8")
         (MOCK_DIR / f"{slug}-flyer.html").write_text(out["flyer"], encoding="utf-8")
         (MOCK_DIR / f"{slug}-spec.json").write_text(

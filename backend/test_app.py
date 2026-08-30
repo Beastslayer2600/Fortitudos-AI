@@ -373,10 +373,11 @@ class LeadgenAndClientsStaySeparate(unittest.TestCase):
 
     def test_a_lead_brief_still_produces_a_shop_page(self):
         import mockup_router
-        page = mockup_router.generate_for_lead(
+        out = mockup_router.generate_for_lead(
             "Joe Plumbing", "Geyser repairs Kempton Park 011 975 1234")
-        self.assertIn("Joe Plumbing", page)
-        self.assertIn("INTERNAL MOCKUP", page)
+        self.assertIn("Joe Plumbing", out["page"])
+        self.assertIn("INTERNAL MOCKUP", out["page"])
+        self.assertIn("Joe Plumbing", out["flyer"])
 
     def test_the_craft_door_never_touches_the_vault(self):
         """/api/craft/mock takes a brief, so no client record can be involved."""

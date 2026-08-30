@@ -19,7 +19,7 @@ import store
 import versioning
 import sort_engine
 from ingest import extract_any
-from retrieval import build_context, corpus_exclusions, search
+from retrieval import corpus_exclusions, search
 from config import CHAT_MODEL, EMBED_MODEL, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_DIR
 from llm import OllamaError, chat, has_model, health
 import desk_extra
@@ -157,71 +157,6 @@ Rules:
 5. Do not write as if advice has been approved or delivered.
 6. Respect FAIS concepts without fabricating compliance content.
 7. Where product mechanics are mentioned, leave [EVIDENCE: document, page]."""
-
-
-SHELF_SUFFIXES = {".pdf", ".md", ".txt"}
-
-LEARN_HOW = [
-    "Tell it a topic and paste the rules in your own words.",
-    "Drop product PDFs on Files — they are indexed page by page.",
-    "Client documents are filed on the client, never on this shelf.",
-]
-
-BRANCH_PURPOSE = {
-    "craft": "Design and local-marketing lessons for the Craft desk.",
-    "advisor": "Product and FAIS practice lessons behind Advisor answers.",
-    "voice": "Tone and phrasing rules for drafted copy.",
-    "drama": "Adjudication craft for the Studio desk.",
-    "all": "Lessons every desk should see.",
-}
-
-# This desk answers from filed pages. Generating unsourced material into the
-# index is the one thing FA_CHAT.md rules out, so self-teaching stays off and
-# says so rather than quietly doing nothing.
-SELF_LEARN_NOTE = (
-    "Self-teaching is off. This desk answers from filed pages, so it will not "
-    "write unsourced material into the index. File a lesson under Tell it, or "
-    "drop a guide under Files."
-)
-
-RESEARCH_NOTE = (
-    "Filed as you wrote it. Advisor does not research a lesson for itself — "
-    "an answer it cited later would be its own words, not a filed page."
-)
-
-
-
-def shelf_files():
-    """Everything on the product and lesson shelf, straight off disk."""
-    files = []
-    if DOCS_DIR.exists():
-        for path in sorted(DOCS_DIR.rglob("*")):
-            if path.is_file() and path.suffix.lower() in SHELF_SUFFIXES:
-                rel = path.relative_to(DOCS_DIR).as_posix()
-                files.append({
-                    "name": rel,
-                    "kind": "lesson" if rel.startswith("learn/") else "guide",
-                    "bytes": path.stat().st_size,
-                })
-    return files
-
-
-def branch_shelves():
-    """Per-room lesson counts, used to show which shelves are still empty."""
-    import learn_teach
-
-    rows = []
-    for branch, folder in learn_teach.BRANCH_DIR.items():
-        count = len(list(folder.glob("*.md"))) if folder.exists() else 0
-        rows.append({
-            "id": f"learn-{branch}",
-            "branch": branch,
-            "title": f"{branch.title()} lessons",
-            "why": BRANCH_PURPOSE.get(branch, ""),
-            "count": count,
-            "have": count > 0,
-        })
-    return rows
 
 
 def json_body(handler):

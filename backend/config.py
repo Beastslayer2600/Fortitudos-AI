@@ -29,12 +29,16 @@ DATA_ROOT = Path(
 
 # Published Craft mockups. These are the only files this server hands to an
 # unauthenticated caller, so they sit in their own directory well away from
-# the client vault.
-MOCKS_DIR = DATA_ROOT / "mocks"
+# the client vault. One constant: desk_extra serves what craft/page writes.
+MOCKS_DIR = DATA_DIR / "mocks"
 
-# What the pamphlet QR points at. Leave it local and design_reason's flyer
-# prints its own "this QR is not public" warning until you set a real host.
-PUBLIC_BASE = os.environ.get("FORTITUDO_PUBLIC_BASE", "http://127.0.0.1:8000").rstrip("/")
+# What the pamphlet QR points at. Empty until a real host is set, which is
+# what design_reason checks before it will draw a printable QR at all.
+PUBLIC_BASE = (os.environ.get("FORTITUDO_PUBLIC_BASE") or "").rstrip("/")
+
+# Where the desk itself answers, used only as the QR fallback so a preview
+# link still resolves locally. Overridden by FORTITUDO_PORT.
+LOCAL_BASE = f"http://127.0.0.1:{os.environ.get('FORTITUDO_PORT', '8000')}"
 
 # ---------------------------------------------------------------- ollama
 OLLAMA_HOST = os.environ.get("FORTITUDO_OLLAMA_HOST") or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
