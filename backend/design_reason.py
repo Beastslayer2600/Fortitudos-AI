@@ -94,7 +94,7 @@ def reason(facts: TradeFacts) -> DesignSpec:
     )
     try:
         from llm import chat
-        raw = chat(SYSTEM, user, temperature=0.2)
+        raw = chat(SYSTEM, user, temperature=0.2, job="craft")
         data = _extract_json(raw)
     except Exception:
         return fallback_spec(facts)
@@ -164,14 +164,38 @@ def flyer_html(facts: TradeFacts, spec: DesignSpec, mock_url: str) -> str:
     )
 
 
-def design_and_render(name: str, source_text: str, city: str = "Kempton Park", mock_url: str = "") -> dict:
+def design_and_render(name: str, source_text: str, city: str = "Kempton Park",
+                      mock_url: str = "", *, live: bool = False,
+                      author_html: bool = True) -> dict:
+    """Design the page, then get it written.
+
+    First choice is html_author: the model writes the whole document, and we
+    serve it only if the gate passes it. Second choice is the fixed template,
+    which cannot state a fact it was not given because it never writes free
+    text. Either way the caller gets a page — `authored` says which one it is
+    and `author_notes` says why, so a silent downgrade is visible.
+    """
     facts = facts_from_text(name, source_text, city=city)
     spec = reason(facts)
     painted = apply_spec(facts, spec)
-    page = render_trade_html(painted, include_sku=False)
-    page = page.replace(f"<h1>{_esc_safe(_headline(facts))}</h1>", f"<h1>{_esc_safe(spec.headline)}</h1>", 1)
+
+    page, notes, authored = None, [], False
+    if author_html:
+        try:
+            from html_author import author
+            page, notes = author(painted, spec, brief=source_text or "", live=live)
+        except Exception as exc:                       # never lose the page to a bug here
+            page, notes = None, [f"author failed: {exc}"]
+        authored = page is not None
+
+    if page is None:
+        page = render_trade_html(painted, include_sku=False, live=live)
+        page = page.replace(f"<h1>{_esc_safe(_headline(facts))}</h1>",
+                            f"<h1>{_esc_safe(spec.headline)}</h1>", 1)
+
     flyer = flyer_html(facts, spec, mock_url)
-    return {"spec": asdict(spec), "page": page, "flyer": flyer, "missing": spec.missing}
+    return {"spec": asdict(spec), "page": page, "flyer": flyer,
+            "missing": spec.missing, "authored": authored, "author_notes": notes}
 
 
 def _esc_safe(s: str) -> str:

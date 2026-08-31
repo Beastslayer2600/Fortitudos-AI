@@ -185,6 +185,8 @@ def handle_post(handler, parts, body) -> bool:
             "qr_printable": printable,
             "spec": out["spec"],
             "missing": out["missing"],
+            "authored": out.get("authored", False),
+            "author_notes": out.get("author_notes", []),
             "note": (
                 "QR is public — safe to print."
                 if printable

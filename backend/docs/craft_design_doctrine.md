@@ -26,7 +26,9 @@ Primary CTA is always Call. Secondary is WhatsApp. Email is last, if it exists.
 
 - Audience: one person, one job, one suburb.
 - Mood: industrial (workshop/trade), warm (bakery/cafe), cool (salon/practice), lush (plants/lodge).
-- Type and colour are executed by the renderer. Do not describe hex codes or fonts.
+- When you are writing a spec, type and colour belong to the renderer — do not
+  describe hex codes or fonts. When you are authoring the document yourself
+  (see craft_html_doctrine.md), they are yours to choose.
 - Photos: only theirs. If none, say so in missing. No stock kitchens.
 - Hours: print only if seen on the door or said by the owner.
 - Language: South African English. Short. Grade 6.

@@ -1,4 +1,4 @@
-import type { CraftLead } from "./craft";
+import type { CraftLead } from "./craft.ts";
 
 const KEY = "fortitudo.craft.ledger.v1";
 

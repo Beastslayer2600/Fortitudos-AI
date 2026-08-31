@@ -1,8 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
 import { llmComplete } from "./llm";
 import { pageByRef } from "./retrieval";
+import { withIdentity } from "./fortitudo";
 
-const SYSTEM_PRODUCT = `You answer questions about financial product documentation for a South African financial adviser.
+const PRODUCT_TASK = `You answer questions about financial product documentation for a South African financial adviser.
 
 Rules:
 - Answer ONLY from the provided document extracts.
@@ -72,7 +73,10 @@ export const askProduct = createServerFn({ method: "POST" })
     }
 
     const user = `Question: ${question}\n\nDocument extracts:\n\n${blocks.join("\n\n---\n\n")}`;
-    const result = await llmComplete(SYSTEM_PRODUCT, user, {
+    // Product wording is Advisor room work: same identity, standard and
+    // refusals the Python desk applies, so the answer does not change character
+    // depending on which half of the app the adviser reached.
+    const result = await llmComplete(withIdentity("fa", PRODUCT_TASK), user, {
       maxTokens: 500,
       temperature: 0.1,
     });

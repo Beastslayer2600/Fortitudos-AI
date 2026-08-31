@@ -21,6 +21,8 @@ import sort_engine
 from ingest import extract_any
 from retrieval import corpus_exclusions, search
 from config import CHAT_MODEL, EMBED_MODEL, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_DIR
+import compute
+import llm as llm_module
 from llm import OllamaError, chat, has_model, health
 import desk_extra
 import ask as ask_mod
@@ -244,6 +246,15 @@ class Handler(BaseHTTPRequestHandler):
                     "models": installed,
                     "chat_model": CHAT_MODEL,
                     "embed_model": EMBED_MODEL,
+                    # Which machine answers which job. A room pinned back to
+                    # localhost is the only way to see that the desk declined
+                    # to send client data to the host you configured.
+                    "compute": [
+                        {"job": p.job, "model": p.model, "host": p.host,
+                         "client_data": p.carries_client_data,
+                         "pinned_local": p.pinned_local, "why": p.why}
+                        for p in compute.plans(llm_module.OLLAMA_HOST)
+                    ],
                     "sort_status": sort_engine.engine.last_status,
                     "drop_zone": str(sort_engine.DROP_ZONE),
                     "clients_indexed": sum(1 for n, c in store.sources(conn) if n.startswith("client:")),
@@ -367,7 +378,7 @@ class Handler(BaseHTTPRequestHandler):
                         "Technical Post": "Transform one technical finding into a draft post. No invented figures.",
                     }.get(draft_type, "Create an internal adviser working summary.")
                     prompt = f"Client documents:\n\n{source}\n\n---\nDraft type: {draft_type}\n{instructions}"
-                    draft = chat(DRAFT_SYSTEM, prompt)
+                    draft = chat(DRAFT_SYSTEM, prompt, job="roa")
                     # Drafting is roa work and was the one generated output with
                     # no check on it: a figure the client file does not support
                     # went straight into a Record of Advice, and the banner was

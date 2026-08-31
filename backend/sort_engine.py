@@ -232,7 +232,7 @@ Reply with exactly this JSON and nothing else:
  "confidence": <0.0-1.0>, "reason": "<one short sentence>"}}"""
 
         try:
-            response = chat(SYSTEM, user)
+            response = chat(SYSTEM, user, job="filing")
         except Exception as e:
             logger.error("LLM classification error: %s", e)
             return None

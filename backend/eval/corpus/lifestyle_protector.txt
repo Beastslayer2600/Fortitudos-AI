@@ -1,0 +1,21 @@
+%%PAGE 12
+Severe Illness Benefit — Cancer
+A claim for cancer is assessed against the severity levels in this section.
+Level A pays 100% of the benefit amount. Level B pays 50%. Level C pays 25%.
+Level D pays 10%. Carcinoma in situ of the breast is a Level D event.
+There is a survival period of 14 days from the date of diagnosis.
+%%PAGE 13
+Severe Illness Benefit — Waiting periods
+A waiting period of 3 months applies from the commencement date for all
+severe illness events other than accidental injury. No waiting period applies
+where the event is the direct result of an accident.
+%%PAGE 27
+Hearing Loss
+Total and irreversible loss of hearing in both ears is a Level A event where
+the loss exceeds 90 decibels across all frequencies in the better ear, tested
+by pure tone audiometry. Loss between 70 and 90 decibels is a Level C event.
+%%PAGE 41
+Exclusions
+No benefit is payable where the claim arises from self-inflicted injury within
+24 months of the commencement date, participation in active military service,
+or a condition that existed before the commencement date and was not disclosed.

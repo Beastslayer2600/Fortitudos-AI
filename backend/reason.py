@@ -81,7 +81,8 @@ DOCTRINE = {
     "craft": (
         "Room: Craft. Local shop page.\n"
         "Order: intent → audience → first screen → headline job+suburb → omit missing hours/reviews.\n"
-        "Call first. No invented 24/7. Design HTML is not your job."
+        "Call first. No invented 24/7.\n"
+        "You may author the HTML and its CSS. Design freely; invent no fact."
     ),
     "drama": (
         "Room: Drama. Adjudication comments.\n"
@@ -157,7 +158,7 @@ def think(room: str, question: str, extracts: str = "") -> Thought:
     )
     try:
         from llm import chat
-        raw = chat(SYSTEM, user, temperature=0.15)
+        raw = chat(SYSTEM, user, temperature=0.15, job=room)
         data = _extract_json(raw)
     except Exception:
         return fallback_thought(room, question)

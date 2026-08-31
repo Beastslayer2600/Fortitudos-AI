@@ -2,7 +2,7 @@
  * Daily operations brief — aggregates what needs attention now.
  * Stubs for calendar/invoices; live data from clients, drama, craft ledger.
  */
-import { loadLedger } from "./craft-ledger";
+import { loadLedger } from "./craft-ledger.ts";
 import type { CraftLead } from "./craft";
 import type { Client, DramaSession, DropItem } from "./types";
 
@@ -31,11 +31,24 @@ export type OpsBrief = {
   summary: string;
 };
 
+function leadStatus(lead: CraftLead): string {
+  return String((lead as { status?: string }).status ?? "").toLowerCase();
+}
+
+/** A lead already shown as an awaiting mockup does not also need chasing. */
+function isAwaitingMockup(lead: CraftLead): boolean {
+  const st = leadStatus(lead);
+  return st.includes("mockup") || st.includes("await");
+}
+
 function leadNeedsFollowup(lead: CraftLead): boolean {
-  const status = String((lead as { status?: string }).status ?? "").toLowerCase();
+  const status = leadStatus(lead);
   if (status.includes("won") || status.includes("done") || status.includes("live")) return false;
-  if (status.includes("sent") || status.includes("await") || status.includes("follow")) return true;
-  return true;
+  // A lead nobody has touched is not a follow-up — there is nothing to follow
+  // up on yet. Treating every untouched lead as due filled the brief with the
+  // whole ledger and pushed the clients who actually need work off the list.
+  if (!status && String(lead.touch ?? "").toLowerCase() === "untouched") return false;
+  return !isAwaitingMockup(lead);
 }
 
 export function buildOpsBrief(input: {
@@ -95,8 +108,7 @@ export function buildOpsBrief(input: {
       });
     }
     for (const lead of leads.slice(0, 8)) {
-      const st = String((lead as { status?: string }).status ?? "").toLowerCase();
-      if (st.includes("mockup") || st.includes("await")) {
+      if (isAwaitingMockup(lead)) {
         items.push({
           id: `mockup-${lead.id}`,
           kind: "mockup",

@@ -1,13 +1,15 @@
 """HTTP layer: CORS origin rules and the Learn routes the desk UI calls."""
 import base64
 import json
+import os
+import re
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import app
@@ -476,6 +478,745 @@ class ClientMockupsTakeABriefOnly(unittest.TestCase):
         self.assertNotIn("HUSH", seen["brief"])
         self.assertNotIn("4,200,000", seen["brief"])
         self.assertIn("calm, one CTA", seen["brief"])
+
+
+GOOD_PAGE = """<!DOCTYPE html>
+<!-- INTERNAL MOCKUP — adviser review required; not live. -->
+<html lang="en-ZA"><head><meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow"><style>body{margin:0}</style></head>
+<body><h1>Burst pipe in Kempton Park</h1>
+<p>Internal mockup · not live</p>
+<a href="tel:0119751234">011 975 1234</a>
+<p>Open 08:00-17:00</p></body></html>"""
+
+
+class TheGateOnModelWrittenHtml(unittest.TestCase):
+    """The model may write the page. It may not write the facts."""
+
+    ALLOWED = "Joe Plumbing\nKempton Park\n011 975 1234\n08:00-17:00"
+
+    def gate(self, html, allowed=None):
+        import html_author
+        return html_author.gate(html, allowed if allowed is not None else self.ALLOWED)
+
+    def test_an_honest_page_passes(self):
+        self.assertTrue(self.gate(GOOD_PAGE).ok, self.gate(GOOD_PAGE).problems)
+
+    def test_a_truncated_document_is_refused(self):
+        # The single most likely model failure: the token budget runs out.
+        v = self.gate(GOOD_PAGE[: len(GOOD_PAGE) // 2])
+        self.assertFalse(v.ok)
+        self.assertTrue(any("truncated" in p for p in v.problems), v.problems)
+
+    def test_an_invented_phone_number_is_refused(self):
+        v = self.gate(GOOD_PAGE.replace("011 975 1234", "082 555 9000"))
+        self.assertFalse(v.ok)
+        self.assertTrue(any("phone not in the brief" in p for p in v.problems), v.problems)
+
+    def test_an_invented_price_is_refused(self):
+        v = self.gate(GOOD_PAGE.replace("<p>Open", "<p>Callout from R450.</p><p>Open"))
+        self.assertFalse(v.ok)
+        self.assertTrue(any("price not in the brief" in p for p in v.problems), v.problems)
+
+    def test_invented_hours_are_refused(self):
+        v = self.gate(GOOD_PAGE.replace("08:00-17:00", "06:00-22:00"))
+        self.assertFalse(v.ok)
+        self.assertTrue(any("time not in the brief" in p for p in v.problems), v.problems)
+
+    def test_an_invented_year_is_refused(self):
+        v = self.gate(GOOD_PAGE.replace("<p>Open", "<p>Serving Kempton Park since 1998.</p><p>Open"))
+        self.assertFalse(v.ok)
+        self.assertTrue(any("year not in the brief" in p for p in v.problems), v.problems)
+
+    def test_unearned_claims_are_refused(self):
+        for claim in ["Open 24/7", "Award-winning service", "Best in Gauteng", "5-star rated"]:
+            v = self.gate(GOOD_PAGE.replace("<p>Open", f"<p>{claim}</p><p>Open"))
+            self.assertFalse(v.ok, claim)
+            self.assertTrue(any("unearned claim" in p for p in v.problems), claim)
+
+    def test_script_form_and_handlers_are_refused(self):
+        for bad, why in [
+            ("<script>fetch('/x')</script>", "<script>"),
+            ("<iframe src='//x'></iframe>", "<iframe>"),
+            ("<form action='/x'></form>", "<form>"),
+            ("<a onclick='x()'>Call</a>", "inline event handler"),
+            ("<a href='javascript:x()'>Call</a>", "javascript:"),
+        ]:
+            v = self.gate(GOOD_PAGE.replace("</body>", bad + "</body>"))
+            self.assertFalse(v.ok, bad)
+            self.assertTrue(any(why in p for p in v.problems), (bad, v.problems))
+
+    def test_a_mockup_must_say_it_is_a_mockup(self):
+        stripped = GOOD_PAGE.replace(
+            "<!-- INTERNAL MOCKUP — adviser review required; not live. -->", ""
+        ).replace("Internal mockup · not live", "")
+        v = self.gate(stripped)
+        self.assertFalse(v.ok)
+        self.assertTrue(any("INTERNAL MOCKUP" in p for p in v.problems), v.problems)
+
+    def test_a_mockup_must_be_noindex(self):
+        v = self.gate(GOOD_PAGE.replace('content="noindex,nofollow"', 'content="index,follow"'))
+        self.assertFalse(v.ok)
+        self.assertIn("missing noindex", v.problems)
+
+    def test_a_live_page_needs_no_mockup_marker(self):
+        import html_author
+        stripped = GOOD_PAGE.replace(
+            "<!-- INTERNAL MOCKUP — adviser review required; not live. -->", ""
+        ).replace('<meta name="robots" content="noindex,nofollow">', "")
+        self.assertTrue(html_author.gate(stripped, self.ALLOWED, live=True).ok)
+
+    def test_facts_inside_style_and_head_are_not_read_as_claims(self):
+        # A CSS rule is not a promise. Only visible text is judged.
+        v = self.gate(GOOD_PAGE.replace("body{margin:0}", "body{margin:0;line-height:1.24}"))
+        self.assertTrue(v.ok, v.problems)
+
+
+class TheAuthorFallsBackRatherThanShipJunk(unittest.TestCase):
+    """A page always comes out. A wrong one never does."""
+
+    def _stub(self, reply):
+        import llm
+        real = llm.chat
+        llm.chat = lambda *a, **kw: reply
+        return real
+
+    def test_a_rejected_page_returns_none_with_reasons(self):
+        import llm, html_author
+        from trade_page import facts_from_text
+        real = self._stub("<html><body>Call 082 555 9000</body></html>")
+        try:
+            page, notes = html_author.author(
+                facts_from_text("Joe Plumbing", "Geyser repairs 011 975 1234"),
+                brief="Geyser repairs 011 975 1234")
+        finally:
+            llm.chat = real
+        self.assertIsNone(page)
+        self.assertTrue(notes)
+
+    def test_an_unreachable_model_is_reported_not_raised(self):
+        import llm, html_author
+        from trade_page import facts_from_text
+
+        def boom(*a, **kw):
+            raise OSError("ollama is not running")
+
+        real = llm.chat
+        llm.chat = boom
+        try:
+            page, notes = html_author.author(facts_from_text("Joe Plumbing", ""), brief="")
+        finally:
+            llm.chat = real
+        self.assertIsNone(page)
+        self.assertTrue(any("model unavailable" in n for n in notes), notes)
+
+    def test_an_accepted_page_is_returned_verbatim(self):
+        import llm, html_author
+        from trade_page import facts_from_text
+        real = self._stub("```html\n" + GOOD_PAGE + "\n```")
+        try:
+            page, notes = html_author.author(
+                facts_from_text("Joe Plumbing", "Geyser repairs 011 975 1234 08:00-17:00"),
+                brief="Geyser repairs 011 975 1234 08:00-17:00")
+        finally:
+            llm.chat = real
+        self.assertIsNotNone(page)
+        self.assertTrue(page.startswith("<!DOCTYPE html>"), page[:40])
+        self.assertTrue(any("model wrote the page" in n for n in notes), notes)
+
+    def test_the_request_asks_for_room_to_write_a_whole_page(self):
+        """A page does not fit in the desk defaults. Assert what Ollama is sent.
+
+        num_predict alone is not enough: prompt and answer share num_ctx, so a
+        long answer in a small window corrupts the page instead of shortening
+        it, and the desk's 300s timeout aborts it before either matters.
+        """
+        import llm, html_author, config
+        from trade_page import facts_from_text
+        sent = {}
+        real = llm._post
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT, host="": sent.update(
+            payload=payload, timeout=timeout, host=host) or {"message": {"content": GOOD_PAGE}}
+        try:
+            html_author.author(facts_from_text("Joe Plumbing", ""), brief="")
+        finally:
+            llm._post = real
+        opts = sent["payload"]["options"]
+        self.assertEqual(opts["num_predict"], html_author.HTML_NUM_PREDICT)
+        self.assertEqual(opts["num_ctx"], html_author.HTML_NUM_CTX)
+        self.assertGreater(opts["num_predict"], config.CHAT_NUM_PREDICT * 4)
+        self.assertGreater(opts["num_ctx"], opts["num_predict"])
+        self.assertEqual(sent["timeout"], html_author.HTML_TIMEOUT)
+        self.assertGreater(sent["timeout"], llm.TIMEOUT)
+
+    def test_the_desk_default_call_is_unchanged(self):
+        """Raising the cap for pages must not raise it for every answer."""
+        import llm, config
+        sent = {}
+        real = llm._post
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT, host="": sent.update(
+            payload=payload, timeout=timeout, host=host) or {"message": {"content": "hi"}}
+        try:
+            llm.chat("sys", "user")
+        finally:
+            llm._post = real
+        self.assertEqual(sent["payload"]["options"]["num_predict"], config.CHAT_NUM_PREDICT)
+        self.assertEqual(sent["payload"]["options"]["num_ctx"], config.CHAT_NUM_CTX)
+        self.assertEqual(sent["timeout"], llm.TIMEOUT)
+
+    def test_authoring_can_be_switched_off_on_a_thin_machine(self):
+        import html_author
+        real = html_author.ENABLED
+        html_author.ENABLED = False
+        try:
+            from trade_page import facts_from_text
+            page, notes = html_author.author(facts_from_text("Joe", ""), brief="")
+        finally:
+            html_author.ENABLED = real
+        self.assertIsNone(page)
+        self.assertTrue(any("off" in n for n in notes), notes)
+
+    def test_a_refused_page_still_leaves_a_page_on_disk(self):
+        import mockup_router
+        out = mockup_router.generate_for_lead(
+            "Joe Plumbing", "Geyser repairs Kempton Park 011 975 1234",
+            author_html=False)
+        self.assertFalse(out["authored"])
+        self.assertIn("INTERNAL MOCKUP", out["page"])
+
+    def test_the_answer_says_who_wrote_the_page(self):
+        """A silent downgrade to the template would be indistinguishable."""
+        import mockup_router
+        out = mockup_router.generate_for_lead(
+            "Joe Plumbing", "Geyser repairs Kempton Park 011 975 1234")
+        self.assertIn("authored", out)
+        self.assertIn("author_notes", out)
+
+
+
+MODEL_PAGE = """<!DOCTYPE html>
+<!-- INTERNAL MOCKUP - adviser review required; not live. -->
+<html lang="en-ZA"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Joe Plumbing</title>
+<style>:root{--acc:#c8102e}body{margin:0;font:16px/1.5 system-ui,sans-serif}
+.bar{position:fixed;bottom:0;left:0;right:0}@media print{.bar{display:none}}</style>
+</head><body>
+<header><h1>Burst pipe or cold geyser - call us in Kempton Park</h1>
+<p>Internal mockup - not live</p></header>
+<a href="tel:0119751234">Call PHONE_HERE</a>
+<main><p>Phone: PHONE_HERE</p><p>Hours: [HOURS]</p></main>
+<div class="bar"><a href="tel:0119751234">Call</a></div>
+</body></html>"""
+
+
+class AStubOllama(BaseHTTPRequestHandler):
+    """Answers design_reason with JSON and html_author with a page."""
+
+    page = MODEL_PAGE.replace("PHONE_HERE", "011 975 1234")
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, payload):
+        raw = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        # resolve_model() asks which models exist before it asks for an answer.
+        self._send({"models": [{"name": "fortitudo:latest"}, {"name": "llama3.2:3b"}]})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"] or 0)))
+        if "web developer" in body["messages"][0]["content"]:
+            out = type(self).page
+        else:
+            out = json.dumps({"headline": "Burst pipe or cold geyser - call us in Kempton Park",
+                              "lead": "Call or WhatsApp.", "intent": "emergency"})
+        self._send({"message": {"content": out}})
+
+
+class TheModelWritesTheServedPage(unittest.TestCase):
+    """End to end: POST a brief, and read back what /m/<slug> actually serves."""
+
+    BRIEF = "Geyser repairs and burst pipes in Kempton Park. Phone 011 975 1234."
+
+    @classmethod
+    def setUpClass(cls):
+        import desk_extra, llm
+        cls.ollama = ThreadingHTTPServer(("127.0.0.1", 0), AStubOllama)
+        threading.Thread(target=cls.ollama.serve_forever, daemon=True).start()
+        cls._host = llm.OLLAMA_HOST
+        llm.OLLAMA_HOST = f"http://127.0.0.1:{cls.ollama.server_address[1]}"
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls._mocks = desk_extra.MOCK_DIR
+        desk_extra.MOCK_DIR = Path(cls.tmp.name) / "mocks"
+
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        import desk_extra, llm
+        llm.OLLAMA_HOST = cls._host
+        desk_extra.MOCK_DIR = cls._mocks
+        cls.server.shutdown()
+        cls.ollama.shutdown()
+        cls.tmp.cleanup()
+
+    def build(self):
+        return request(self.server, "/api/craft/page", method="POST",
+                       body={"name": "Joe Plumbing", "facts": self.BRIEF,
+                             "city": "Kempton Park"})
+
+    def served(self, path):
+        url = f"http://127.0.0.1:{self.server.server_address[1]}{path}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return resp.read().decode()
+
+    def test_a_page_the_model_wrote_is_the_page_that_is_served(self):
+        AStubOllama.page = MODEL_PAGE.replace("PHONE_HERE", "011 975 1234")
+        status, _, out = self.build()
+        self.assertEqual(status, 200)
+        self.assertTrue(out["authored"], out["author_notes"])
+        page = self.served(out["path"])
+        self.assertIn("--acc:#c8102e", page, "this is the template, not the model's page")
+        self.assertIn("INTERNAL MOCKUP", page)
+
+    def test_a_page_that_invents_a_phone_number_never_reaches_the_slug(self):
+        AStubOllama.page = MODEL_PAGE.replace("PHONE_HERE", "082 555 9000")
+        status, _, out = self.build()
+        self.assertEqual(status, 200)
+        self.assertFalse(out["authored"])
+        self.assertTrue(any("phone" in n for n in out["author_notes"]), out["author_notes"])
+        page = self.served(out["path"])
+        self.assertNotIn("082 555 9000", page)
+        self.assertIn("INTERNAL MOCKUP", page)
+
+
+
+LAN = "http://192.168.1.50:11434"
+HERE = "http://127.0.0.1:11434"
+
+
+class ClientDataStaysOnThisMachine(unittest.TestCase):
+    """Pointing the desk at a faster box must not put client files on the LAN."""
+
+    def setUp(self):
+        import compute
+        self.compute = compute
+        self._allow = compute.ALLOW_REMOTE_CLIENT_DATA
+        self._env = dict(os.environ)
+
+    def tearDown(self):
+        self.compute.ALLOW_REMOTE_CLIENT_DATA = self._allow
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def test_craft_may_run_on_another_machine(self):
+        plan = self.compute.resolve("craft", LAN)
+        self.assertEqual(plan.host, LAN)
+        self.assertFalse(plan.carries_client_data)
+
+    def test_every_other_job_is_pinned_back_to_this_machine(self):
+        for job in ["fa", "roa", "voice", "drama", "learn", "filing", "sight"]:
+            plan = self.compute.resolve(job, LAN)
+            self.assertTrue(plan.pinned_local, job)
+            self.assertTrue(self.compute.is_local(plan.host), (job, plan.host))
+
+    def test_an_unnamed_job_is_pinned_too(self):
+        """Forgetting to name a job must fail safe, not fast."""
+        for job in ["", "something_new", "toaster"]:
+            self.assertTrue(self.compute.resolve(job, LAN).pinned_local, job)
+
+    def test_the_pin_says_why_and_how_to_lift_it(self):
+        why = self.compute.resolve("roa", LAN).why
+        self.assertIn(LAN, why)
+        self.assertIn("FORTITUDO_ALLOW_REMOTE_CLIENT_DATA", why)
+
+    def test_the_operator_can_opt_out_deliberately(self):
+        self.compute.ALLOW_REMOTE_CLIENT_DATA = True
+        self.assertEqual(self.compute.resolve("roa", LAN).host, LAN)
+
+    def test_nothing_is_pinned_when_the_host_is_already_local(self):
+        for job in ["fa", "roa", "filing"]:
+            self.assertFalse(self.compute.resolve(job, HERE).pinned_local, job)
+
+    def test_a_host_that_cannot_be_read_is_not_treated_as_local(self):
+        for host in ["", "not a url", "http://", "http://evil.example.com",
+                     "http://127.0.0.1.evil.com", "http://0.0.0.0:11434"]:
+            self.assertFalse(self.compute.is_local(host), host)
+
+    def test_loopback_spellings_are_local(self):
+        for host in ["http://127.0.0.1:11434", "http://localhost:11434",
+                     "http://[::1]:11434", "127.0.0.1:11434"]:
+            self.assertTrue(self.compute.is_local(host), host)
+
+    def test_a_job_can_be_given_its_own_model(self):
+        os.environ["FORTITUDO_CRAFT_MODEL"] = "qwen2.5-coder:7b"
+        self.assertEqual(self.compute.resolve("craft", HERE).model, "qwen2.5-coder:7b")
+        import config
+        self.assertEqual(self.compute.resolve("fa", HERE).model, config.CHAT_MODEL)
+
+    def test_a_job_can_be_given_its_own_host(self):
+        os.environ["FORTITUDO_CRAFT_HOST"] = LAN
+        self.assertEqual(self.compute.resolve("craft", HERE).host, LAN)
+        self.assertEqual(self.compute.resolve("fa", HERE).host, HERE)
+
+    def test_a_per_job_host_cannot_smuggle_client_data_out(self):
+        """The pin is on the job, not on where the host came from."""
+        os.environ["FORTITUDO_ROA_HOST"] = LAN
+        plan = self.compute.resolve("roa", HERE)
+        self.assertTrue(plan.pinned_local)
+        self.assertTrue(self.compute.is_local(plan.host))
+
+
+class EveryModelCallNamesItsJob(unittest.TestCase):
+    """A call with no job is routed as client data, so an unlabelled one is a bug."""
+
+    def test_the_client_carrying_call_sites_are_labelled(self):
+        import inspect, app, sort_engine, ask
+        self.assertIn('job="filing"', inspect.getsource(sort_engine.SortEngine._classify))
+        self.assertIn('job="roa"', inspect.getsource(app.Handler))
+        self.assertIn("job=room", inspect.getsource(ask.answer))
+
+    def test_no_chat_call_in_the_backend_is_unlabelled(self):
+        import pathlib, re
+        root = pathlib.Path(__file__).parent
+        misses = []
+        for py in sorted(root.glob("*.py")):
+            if py.name.startswith("test_") or py.name in {"llm.py", "compute.py"}:
+                continue
+            src = py.read_text(encoding="utf-8")
+            for call in re.findall(r"\bchat\(\s*[A-Z_]+\w*\s*,.*?\)", src, re.S):
+                if "job=" not in call:
+                    misses.append(f"{py.name}: {call[:60]}")
+        self.assertEqual(misses, [], "these calls would be routed as client data")
+
+    def test_chat_sends_craft_to_the_fast_box_and_roa_to_this_one(self):
+        """The whole point, exercised through llm.chat rather than resolve()."""
+        import llm
+        lan = "http://192.168.1.50:11434"
+        seen = []
+        real = llm._post
+        env = dict(os.environ)
+        os.environ["FORTITUDO_CRAFT_HOST"] = lan
+        os.environ["FORTITUDO_CRAFT_MODEL"] = "qwen2.5-coder:7b"
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT, host="": seen.append(
+            (host, payload["model"])) or {"message": {"content": "x"}}
+        try:
+            llm.chat("sys", "brief", job="craft")
+            llm.chat("sys", "client file", job="roa")
+            llm.chat("sys", "unlabelled")
+        finally:
+            llm._post = real
+            os.environ.clear()
+            os.environ.update(env)
+        import compute, config
+        self.assertEqual(seen[0], (lan, "qwen2.5-coder:7b"), "craft should use the fast box")
+        for host, model in seen[1:]:
+            self.assertTrue(compute.is_local(host), host)
+            self.assertEqual(model, config.CHAT_MODEL)
+
+    def test_health_reports_where_each_job_runs(self):
+        import compute, llm
+        jobs = {p.job for p in compute.plans(llm.OLLAMA_HOST)}
+        for expected in ["fa", "roa", "craft", "filing", "sight"]:
+            self.assertIn(expected, jobs)
+
+
+
+class TheDeskAsksForItsOwnModel(unittest.TestCase):
+    """`fortitudo` is the default. A fresh clone that lacks it still runs."""
+
+    def setUp(self):
+        import llm
+        self.llm = llm
+        llm._resolved.clear()
+
+    def tearDown(self):
+        self.llm._resolved.clear()
+
+    def _installed(self, names):
+        real = self.llm.health
+        self.llm.health = lambda host="": list(names)
+        return real
+
+    def test_the_configured_default_is_the_desks_own_model(self):
+        import config
+        self.assertEqual(config.CHAT_MODEL, "fortitudo")
+
+    def test_it_uses_fortitudo_when_it_is_built(self):
+        real = self._installed(["fortitudo:latest", "llama3.2:3b"])
+        try:
+            self.assertEqual(self.llm.resolve_model("fortitudo"), "fortitudo")
+        finally:
+            self.llm.health = real
+
+    def test_it_falls_back_to_the_base_model_when_it_is_not(self):
+        import config
+        real = self._installed(["llama3.2:3b"])
+        try:
+            self.assertEqual(self.llm.resolve_model("fortitudo"), config.BASE_MODEL)
+        finally:
+            self.llm.health = real
+
+    def test_an_explicit_model_is_never_second_guessed(self):
+        real = self._installed(["qwen2.5-coder:7b", "llama3.2:3b"])
+        try:
+            self.assertEqual(self.llm.resolve_model("qwen2.5-coder:7b"), "qwen2.5-coder:7b")
+        finally:
+            self.llm.health = real
+
+    def test_a_dead_ollama_reports_rather_than_silently_substituting(self):
+        real = self.llm.health
+
+        def down(host=""):
+            raise self.llm.OllamaError("not running")
+
+        self.llm.health = down
+        try:
+            self.assertEqual(self.llm.resolve_model("fortitudo"), "fortitudo")
+        finally:
+            self.llm.health = real
+
+    def test_the_lookup_is_cached_not_run_per_question(self):
+        calls = []
+        real = self.llm.health
+        self.llm.health = lambda host="": calls.append(1) or ["fortitudo:latest"]
+        try:
+            for _ in range(5):
+                self.llm.resolve_model("fortitudo")
+        finally:
+            self.llm.health = real
+        self.assertEqual(len(calls), 1, "one probe, not one per call")
+
+    def test_each_host_is_resolved_separately(self):
+        """The craft box and this machine can have different models installed."""
+        seen = []
+        real = self.llm.health
+        self.llm.health = lambda host="": seen.append(host) or ["fortitudo:latest"]
+        try:
+            self.llm.resolve_model("fortitudo", "http://127.0.0.1:11434")
+            self.llm.resolve_model("fortitudo", "http://192.168.1.50:11434")
+        finally:
+            self.llm.health = real
+        self.assertEqual(len(seen), 2)
+
+
+class TheModelfileIsTheDesksIdentity(unittest.TestCase):
+    """The built model must carry the rails, or building it is decoration."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (Path(__file__).parent / "model" / "Modelfile").read_text(encoding="utf-8")
+
+    def test_it_declares_a_base_and_a_system(self):
+        self.assertIn("FROM ", self.text)
+        self.assertIn("SYSTEM ", self.text)
+
+    def test_it_states_the_fsp_boundary(self):
+        self.assertIn("FSP 2409", self.text)
+        self.assertIn("You are not the FSP", self.text)
+
+    def test_it_carries_the_refusals_the_code_enforces(self):
+        for rule in ["waiting period", "24/7", "testimonial", "opening hours"]:
+            self.assertIn(rule, self.text, rule)
+
+    def test_it_keeps_the_two_businesses_apart(self):
+        self.assertIn("separate businesses", self.text)
+
+    def test_it_defers_to_the_room_prompt(self):
+        """A baked-in prompt must be the floor, never override a room."""
+        self.assertIn("These are the floor.", self.text)
+
+    def test_the_context_window_fits_a_room_prompt_plus_extracts(self):
+        import config
+        m = re.search(r"PARAMETER num_ctx (\d+)", self.text)
+        self.assertIsNotNone(m)
+        self.assertGreaterEqual(int(m.group(1)), config.CHAT_NUM_CTX)
+
+
+
+class DoctrineReachesTheModel(unittest.TestCase):
+    """A doctrine file nobody loads is a file, not knowledge."""
+
+    def test_the_html_doctrine_is_loaded(self):
+        import html_author
+        text = html_author.doctrine()
+        self.assertGreater(len(text), 500)
+        for rule in ["[HOURS]", "24/7", "INTERNAL MOCKUP", "noindex"]:
+            self.assertIn(rule, text, rule)
+
+    def test_the_doctrine_is_in_the_prompt_the_model_sees(self):
+        import llm, html_author
+        from trade_page import facts_from_text
+        seen = {}
+        real = llm._post
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT, host="": seen.update(
+            user=payload["messages"][1]["content"]) or {"message": {"content": "x"}}
+        try:
+            html_author.author(facts_from_text("Joe Plumbing", ""), brief="")
+        finally:
+            llm._post = real
+        self.assertIn("DOCTRINE", seen["user"])
+        self.assertIn("[HOURS]", seen["user"])
+
+    def test_the_doctrine_teaches_what_the_gate_actually_checks(self):
+        """Doctrine that disagrees with the gate trains the model to fail."""
+        import html_author
+        text = html_author.doctrine().lower()
+        for banned in ["24/7", "award-winning", "best in", "guaranteed"]:
+            self.assertIn(banned, text, f"gate bans {banned} but doctrine never says so")
+        self.assertIn("script", text)
+        self.assertIn("<form", text.replace("`", ""))
+
+    def test_craft_doctrine_no_longer_says_html_is_not_its_job(self):
+        """html_author made that instruction false; a stale rule is worse than none."""
+        import reason
+        self.assertNotIn("Design HTML is not your job", reason.DOCTRINE["craft"])
+        self.assertIn("author the HTML", reason.DOCTRINE["craft"])
+
+    def test_the_separation_doctrine_exists_and_names_both_sides(self):
+        text = (Path(__file__).parent / "docs" / "desk_separation_doctrine.md").read_text(encoding="utf-8")
+        self.assertIn("Craft lead", text)
+        self.assertIn("FA client", text)
+        self.assertIn("never share a record", text)
+
+    def test_every_doctrine_file_is_listed_in_the_index(self):
+        docs = Path(__file__).parent / "docs"
+        index = (docs / "KNOWLEDGE_INDEX.md").read_text(encoding="utf-8")
+        for name in ["craft_html_doctrine.md", "desk_separation_doctrine.md"]:
+            self.assertIn(name, index, f"{name} is not discoverable from the index")
+
+
+
+class MoneyIsCheckedLikeEveryOtherFigure(unittest.TestCase):
+    """An invented premium was the one figure span_check never looked at."""
+
+    def check(self, answer, context):
+        from versioning import span_check
+        return span_check(answer, context)
+
+    def test_an_invented_rand_amount_is_replaced(self):
+        out, flagged = self.check("The premium is R1 250 per month.", "No premium is stated.")
+        self.assertNotIn("R1 250", out.split("[SPAN-CHECK]")[0])
+        self.assertIn("R1 250", flagged)
+
+    def test_an_invented_sum_assured_is_replaced(self):
+        out, _ = self.check("Cover of R1 500 000 applies.", "The benefit amount is not given.")
+        self.assertNotIn("R1 500 000", out.split("[SPAN-CHECK]")[0])
+
+    def test_a_real_amount_survives_a_different_separator(self):
+        """R1,250 and R1 250 are the same number; flagging one would be a lie."""
+        out, flagged = self.check("The premium is R1 250.", "Premium: R1,250 monthly.")
+        self.assertIn("R1 250", out)
+        self.assertEqual(flagged, [])
+
+    def test_a_bare_thousands_figure_is_checked(self):
+        out, _ = self.check("Income of 1 500 000 a year.", "No income figure appears here.")
+        self.assertNotIn("1 500 000", out.split("[SPAN-CHECK]")[0])
+
+    def test_percentages_and_durations_still_work(self):
+        out, _ = self.check("A 6 month wait and 80% payout.", "A 3 month wait. Pays 100%.")
+        body = out.split("[SPAN-CHECK]")[0]
+        self.assertNotIn("6 month", body)
+        self.assertNotIn("80%", body)
+
+
+class TheDeskSaysWhenItHoldsTwoVersions(unittest.TestCase):
+    """A real citation vouching for the wrong version is the invisible failure."""
+
+    def rows(self, *sources):
+        return [((i, s, 1, "text", 0), 1.0) for i, s in enumerate(sources)]
+
+    def test_two_versions_of_one_guide_are_flagged(self):
+        from versioning import version_conflict
+        got = version_conflict(self.rows("guide:lifestyle_protector",
+                                         "guide:lifestyle_protector_v2"))
+        self.assertEqual(len(got), 2)
+
+    def test_two_different_products_are_not_flagged(self):
+        from versioning import version_conflict
+        self.assertEqual(
+            version_conflict(self.rows("guide:lifestyle_protector", "guide:income_protector")),
+            [])
+
+    def test_dated_editions_of_one_guide_are_flagged(self):
+        from versioning import version_conflict
+        self.assertEqual(
+            len(version_conflict(self.rows("guide:lp_2024", "guide:lp_2025"))), 2)
+
+    def test_the_note_tells_the_adviser_what_to_do(self):
+        from versioning import version_note
+        note = version_note(self.rows("guide:lp", "guide:lp_v2"))
+        self.assertIn("[VERSIONS]", note)
+        self.assertIn("Open the cited page", note)
+
+    def test_a_clean_result_set_adds_nothing(self):
+        from versioning import version_note
+        self.assertEqual(version_note(self.rows("guide:income_protector")), "")
+
+
+class ReasoningDepthFollowsTheRoom(unittest.TestCase):
+    """A second model call is minutes on a CPU. Spend it where it is owed."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("FORTITUDO_THINK", None)
+
+    def tearDown(self):
+        os.environ.pop("FORTITUDO_THINK", None)
+        if self._saved is not None:
+            os.environ["FORTITUDO_THINK"] = self._saved
+
+    def test_the_compliance_rooms_reason_first(self):
+        import ask
+        for room in ("fa", "roa"):
+            self.assertTrue(ask._should_think(room), room)
+
+    def test_the_draft_rooms_answer_in_one_pass(self):
+        import ask
+        for room in ("craft", "voice", "drama", "learn"):
+            self.assertFalse(ask._should_think(room), room)
+
+    def test_it_can_be_forced_on_and_off(self):
+        import ask
+        os.environ["FORTITUDO_THINK"] = "1"
+        self.assertTrue(ask._should_think("craft"))
+        os.environ["FORTITUDO_THINK"] = "0"
+        self.assertFalse(ask._should_think("fa"))
+
+
+class TheEvalHarnessIsRealAndRuns(unittest.TestCase):
+    """A harness that cannot fail measures nothing."""
+
+    def test_the_offline_suites_pass_on_this_commit(self):
+        import eval_desk
+        conn = eval_desk.build_index()
+        for score in (eval_desk.score_routing(), eval_desk.score_retrieval(conn),
+                      eval_desk.score_grounding(), eval_desk.score_separation(),
+                      eval_desk.score_gate(), eval_desk.score_versioning(),
+                      eval_desk.score_depth()):
+            self.assertEqual(score.failed, [], f"{score.name}: {score.failed}")
+            self.assertGreater(score.total, 0, f"{score.name} has no cases")
+
+    def test_the_corpus_contains_a_deliberate_near_duplicate(self):
+        """Without rival versions the retrieval score cannot discriminate."""
+        from eval.harness import CORPUS
+        names = {p.stem for p in CORPUS.glob("*.txt")}
+        self.assertIn("lifestyle_protector", names)
+        self.assertIn("lifestyle_protector_v2", names)
+
+    def test_the_fixture_embedding_is_deterministic(self):
+        from eval.harness import fake_embed
+        self.assertEqual(fake_embed("waiting period"), fake_embed("waiting period"))
+        self.assertNotEqual(fake_embed("waiting period"), fake_embed("hearing loss"))
+
 
 
 if __name__ == "__main__":

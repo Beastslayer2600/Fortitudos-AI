@@ -61,7 +61,11 @@ export const deskApi = {
   get base() {
     return getApiBase();
   },
-  status: () => json<{ ok: boolean; models: string[]; sources: { name: string; pages: number }[] }>("/api/status"),
+  status: () => json<{ ok: boolean; models: string[]; sources: { name: string; pages: number }[];
+      /** Which machine answers which job. `pinned_local` means the desk refused to
+       *  send that job to the configured host because it can carry client data. */
+      compute: { job: string; model: string; host: string; client_data: boolean;
+                 pinned_local: boolean; why: string }[] }>("/api/status"),
   build: () => json<{ desk_build: string; public_base: string | null }>("/api/build"),
   learn: () =>
     json<{ docs: { name: string; kind: string; bytes: number }[]; sources: { name: string; pages: number }[]; how: string[] }>("/api/learn"),
@@ -89,7 +93,9 @@ export const deskApi = {
   ask: (question: string, history: { role: string; content: string }[], clientId?: string, room?: string) =>
     json<{ answer: string; room: string; why: string; standard: string; refuse: string; sources: { source: string; page: number; score: number }[]; used_client_files: boolean }>("/api/ask", { method: "POST", body: JSON.stringify({ question, history, client_id: clientId || "", room: room || "" }) }),
   craftPage: (input: { name: string; city?: string; facts: string; url?: string }) =>
-    json<{ ok: boolean; slug: string; path: string; spec: Record<string, unknown>; missing: string[] }>("/api/craft/page", { method: "POST", body: JSON.stringify(input) }),
+    json<{ ok: boolean; slug: string; path: string; spec: Record<string, unknown>; missing: string[];
+      /** true when the model wrote the HTML; false when the gate refused it and the template ran. */
+      authored: boolean; author_notes: string[] }>("/api/craft/page", { method: "POST", body: JSON.stringify(input) }),
   consent: (identifier: string, action = "check") =>
     json<{ allowed: boolean; kind: string; reason: string; state: string }>("/api/consent", { method: "POST", body: JSON.stringify({ identifier, action }) }),
   fileClientDoc: (clientId: string, filename: string, contentBase64: string, docType = "Other") =>
