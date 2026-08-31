@@ -15,6 +15,7 @@ import { briefToChatLines, buildOpsBrief } from "./ops-brief";
 import { loadLedger, saveLedger } from "./craft-ledger";
 import type { CraftLead } from "./craft";
 import { slug } from "./utils";
+import { clientFileLanguage } from "./crossover";
 
 export type DeskAgentAction =
   | { type: "select_client"; clientId?: string; nameQuery?: string }
@@ -138,11 +139,22 @@ export function applyDeskActions(
   activeClientId: string | null;
   fnaFactLines: string[];
   fnaMarkdown?: string;
+  output?: string;
 } {
   let activeClientId = ctx.activeClientId;
   let fnaFactLines = [...ctx.fnaFactLines];
   const applied: string[] = [];
+  // `fnaMarkdown` IS the client's FNA draft: chat.tsx offers to save it as an
+  // FNA note on the open client file. Only the FNA actions may write to it.
+  // Everything else — the day's brief, a follow-up, an invoice — goes to
+  // `output`, which is shown and never filed. Sharing one field meant asking
+  // "what is on my plate today?" with a client open put other clients' names
+  // and Craft lead names into that client's compliance record.
   let fnaMarkdown: string | undefined;
+  let output: string | undefined;
+  const say = (block: string) => {
+    output = (output ? output + "\n\n" : "") + block;
+  };
 
   for (const action of actions) {
     if (action.type === "select_client") {
@@ -279,19 +291,22 @@ export function applyDeskActions(
         sessions: ctx.sessions ?? [],
         dropItems: ctx.dropItems ?? [],
       });
-      const lines = briefToChatLines(brief);
       applied.push(action.type === "list_today" ? "Listed today's brief" : "Listed pending items");
-      fnaMarkdown = (fnaMarkdown ? fnaMarkdown + "\n\n" : "") + lines;
+      say(briefToChatLines(brief));
       continue;
     }
 
     if (action.type === "schedule_followup") {
       const who = (action.who || "").trim() || "unassigned";
       const when = (action.whenLabel || "soon").trim();
-      const line = action.line || "fa";
+      // No default line. Defaulting to "fa" meant a follow-up the model did not
+      // label ran a fuzzy name match against advice clients — so a shop owner
+      // whose name was close enough to a client's got a note written onto that
+      // client's file. An unlabelled follow-up is logged, not filed.
+      const line = action.line;
       const note = (action.note || "").trim();
       const title = `Follow-up \u00b7 ${who} \u00b7 ${when}`;
-      const content = [`Line: ${line}`, `When: ${when}`, note ? `Note: ${note}` : null, "(Stub) Full calendar write lands in a later ops store."].filter(Boolean).join("\n");
+      const content = [`Line: ${line ?? "unspecified"}`, `When: ${when}`, note ? `Note: ${note}` : null, "(Stub) Full calendar write lands in a later ops store."].filter(Boolean).join("\n");
       if (line === "fa") {
         const id = resolveClientId({ nameQuery: who }, ctx, activeClientId);
         if (id) {
@@ -302,7 +317,7 @@ export function applyDeskActions(
         }
       }
       applied.push(`Follow-up logged (stub): ${title}`);
-      fnaMarkdown = (fnaMarkdown ? fnaMarkdown + "\n\n" : "") + content;
+      say(content);
       continue;
     }
 
@@ -310,6 +325,19 @@ export function applyDeskActions(
       const name = (action.name || "").trim();
       if (!name) {
         applied.push("intake_lead skipped \u2014 name required");
+        continue;
+      }
+      // The backend refuses a lead brief carrying client-file language
+      // (crossover.CLIENT_FILE, enforced in mockup_router.generate_for_lead).
+      // This door had no such check, so an FNA or an ID number could be typed
+      // straight into the Craft ledger — merging the two businesses in the one
+      // direction the router was built to prevent.
+      const smell = clientFileLanguage(`${name} ${action.note ?? ""} ${action.businessType ?? ""}`);
+      if (smell) {
+        applied.push(
+          `intake_lead refused \u2014 that reads like a client file (${smell}). ` +
+            "A Craft lead is a shop owner, not an advice client.",
+        );
         continue;
       }
       const lead: CraftLead = {
@@ -345,12 +373,12 @@ export function applyDeskActions(
       const memo = (action.memo || "").trim();
       const block = ["INVOICE STUB (not yet in billing store)", `Who: ${who}`, `Line: ${line}`, `Amount: ${amount}`, due ? `Due: ${due}` : null, memo ? `Memo: ${memo}` : null].filter(Boolean).join("\n");
       applied.push(`Invoice stub for ${who} \u00b7 ${amount}`);
-      fnaMarkdown = (fnaMarkdown ? fnaMarkdown + "\n\n" : "") + block;
+      say(block);
       continue;
     }
   }
 
-  return { applied, activeClientId, fnaFactLines, fnaMarkdown };
+  return { applied, activeClientId, fnaFactLines, fnaMarkdown, output };
 }
 
 export function parseAgentJson(text: string): {

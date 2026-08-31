@@ -157,6 +157,10 @@ function ChatPage() {
         if (applied.activeClientId) setActiveClientId(applied.activeClientId);
         fnaFactLines.current = applied.fnaFactLines;
 
+        // Only a real FNA draft becomes a saveable client note. `output` is
+        // desk chatter — the day's brief, a follow-up, an invoice stub — and
+        // filing that on a client file would put other clients' names and
+        // Craft lead names into a regulated record.
         if (applied.fnaMarkdown && applied.activeClientId) {
           const c = state.clients.find((x) => x.id === applied.activeClientId);
           setLastPrep({
@@ -169,6 +173,9 @@ function ChatPage() {
         let reply = agent.reply;
         if (applied.applied.length) {
           reply += `\n\n—\n**File changes:**\n${applied.applied.map((a) => `· ${a}`).join("\n")}`;
+        }
+        if (applied.output) {
+          reply += `\n\n---\n${applied.output}`;
         }
         if (applied.fnaMarkdown) {
           reply += `\n\n---\n### FNA intake draft\n${applied.fnaMarkdown}`;
