@@ -18,10 +18,27 @@ CHANGE_HINT = re.compile(
     r"\b(what changed|vs previous|versus previous|replacement wording|difference between versions)\b",
     re.I,
 )
+# What counts as a figure the answer must have got from a page.
+#
+# Percentages and durations were checked from the start. Money was not — so an
+# invented premium, sum assured or fee walked straight into an RoA draft, which
+# is the single worst number to be wrong about in a document a client signs.
+# Amounts and bare thousands are now checked too.
 FIGURE_RE = re.compile(
-    r"(\d+(?:\.\d+)?\s*%|\b\d+\s*(?:days?|weeks?|months?|years?)\b)",
+    r"("
+    r"\d+(?:\.\d+)?\s*%"                                   # 75%, 12.5 %
+    r"|\bR\s?\d[\d\s,.]*\d(?:\s*(?:m|k|million|billion))?"  # R1 250, R1.2 million
+    r"|\bR\s?\d\b"                                          # R5
+    r"|\b\d+\s*(?:days?|weeks?|months?|years?)\b"            # 3 months
+    r"|\b\d{1,3}(?:[\s,]\d{3})+(?:\.\d+)?\b"               # 1 500 000, 1,250.00
+    r")",
     re.I,
 )
+
+# "R1,250" in a document and "R1 250" in the answer are the same number. The
+# comparison strips both separators so a real figure is not flagged as invented
+# over a comma — a grounding check that eats true facts is worse than none.
+_SEPARATORS = re.compile(r"[\s,]")
 
 
 def sha256_text(text: str) -> str:
@@ -123,12 +140,12 @@ def span_check(answer: str, context: str) -> Tuple[str, List[str]]:
     if not answer:
         return answer, []
     blob = (context or "").lower()
-    blob_compact = re.sub(r"\s+", "", blob)
+    blob_compact = _SEPARATORS.sub("", blob)
     flagged: List[str] = []
     out = answer
     for m in FIGURE_RE.finditer(answer):
         token = m.group(0)
-        compact = re.sub(r"\s+", "", token.lower())
+        compact = _SEPARATORS.sub("", token.lower())
         if compact in blob_compact or token.lower() in blob:
             continue
         if re.search(r"\[missing|not in the extract|not in the provided", answer, re.I):
@@ -144,6 +161,57 @@ def span_check(answer: str, context: str) -> Tuple[str, List[str]]:
         if "[SPAN-CHECK]" not in out:
             out = out.rstrip() + note
     return out, flagged
+
+
+def product_of(source: str) -> str:
+    """The product a source belongs to, with version and date markers stripped.
+
+    `lifestyle_protector_v2` and `lifestyle_protector` are the same product.
+    Grouping by this is what lets the desk notice it is holding two versions.
+    """
+    stem = Path(source or "").stem
+    stem = re.sub(r"^(guide|client|learn):", "", stem)
+    stem = re.sub(r"[-_\s]v\d+.*$", "", stem, flags=re.I)
+    stem = re.sub(r"[-_\s]20\d{2}.*$", "", stem)
+    return stem.strip("-_ ").lower()
+
+
+def version_conflict(results) -> List[str]:
+    """Sources in this result set that are rival versions of one product.
+
+    The dangerous retrieval failure is not an irrelevant page — the adviser
+    spots that. It is two versions of the same guide where only a figure
+    differs, because the answer then looks perfectly normal and cites a real
+    page. Returns the conflicting source names, newest-looking last.
+    """
+    groups: Dict[str, set] = {}
+    for row, _score in results or []:
+        source = row[1] if len(row) > 1 else ""
+        if not source:
+            continue
+        groups.setdefault(product_of(source), set()).add(source)
+    clashes = []
+    for _product, sources in sorted(groups.items()):
+        if len(sources) > 1:
+            clashes.extend(sorted(sources))
+    return clashes
+
+
+def version_note(results) -> str:
+    """A line for the adviser when the extracts disagree about their own age.
+
+    Silence here would be the desk choosing a version on the adviser's behalf
+    using nothing but word overlap.
+    """
+    clashes = version_conflict(results)
+    if not clashes:
+        return ""
+    return (
+        "\n\n[VERSIONS] These extracts come from more than one version of the "
+        "same document: " + ", ".join(clashes) + ". Figures may differ between "
+        "them. Open the cited page and confirm which version applies before "
+        "using a number."
+    )
 
 
 def snapshot_id(results: List[Tuple[Any, float]]) -> str:

@@ -1,0 +1,11 @@
+%%PAGE 12
+Severe Illness Benefit — Cancer
+A claim for cancer is assessed against the severity levels in this section.
+Level A pays 100% of the benefit amount. Level B pays 60%. Level C pays 30%.
+Level D pays 15%. Carcinoma in situ of the breast is a Level C event.
+There is a survival period of 7 days from the date of diagnosis.
+%%PAGE 13
+Severe Illness Benefit — Waiting periods
+A waiting period of 6 months applies from the commencement date for all
+severe illness events other than accidental injury. No waiting period applies
+where the event is the direct result of an accident.

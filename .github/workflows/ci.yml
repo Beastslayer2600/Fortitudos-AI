@@ -30,6 +30,9 @@ jobs:
           python-version: "3.11"
       - run: pip install -r backend/requirements.txt pytest
       - run: python -m pytest backend -q
+      - name: Desk evaluation
+        working-directory: backend
+        run: python eval_desk.py
 
   notes:
     runs-on: ubuntu-latest

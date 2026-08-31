@@ -1096,5 +1096,128 @@ class DoctrineReachesTheModel(unittest.TestCase):
 
 
 
+class MoneyIsCheckedLikeEveryOtherFigure(unittest.TestCase):
+    """An invented premium was the one figure span_check never looked at."""
+
+    def check(self, answer, context):
+        from versioning import span_check
+        return span_check(answer, context)
+
+    def test_an_invented_rand_amount_is_replaced(self):
+        out, flagged = self.check("The premium is R1 250 per month.", "No premium is stated.")
+        self.assertNotIn("R1 250", out.split("[SPAN-CHECK]")[0])
+        self.assertIn("R1 250", flagged)
+
+    def test_an_invented_sum_assured_is_replaced(self):
+        out, _ = self.check("Cover of R1 500 000 applies.", "The benefit amount is not given.")
+        self.assertNotIn("R1 500 000", out.split("[SPAN-CHECK]")[0])
+
+    def test_a_real_amount_survives_a_different_separator(self):
+        """R1,250 and R1 250 are the same number; flagging one would be a lie."""
+        out, flagged = self.check("The premium is R1 250.", "Premium: R1,250 monthly.")
+        self.assertIn("R1 250", out)
+        self.assertEqual(flagged, [])
+
+    def test_a_bare_thousands_figure_is_checked(self):
+        out, _ = self.check("Income of 1 500 000 a year.", "No income figure appears here.")
+        self.assertNotIn("1 500 000", out.split("[SPAN-CHECK]")[0])
+
+    def test_percentages_and_durations_still_work(self):
+        out, _ = self.check("A 6 month wait and 80% payout.", "A 3 month wait. Pays 100%.")
+        body = out.split("[SPAN-CHECK]")[0]
+        self.assertNotIn("6 month", body)
+        self.assertNotIn("80%", body)
+
+
+class TheDeskSaysWhenItHoldsTwoVersions(unittest.TestCase):
+    """A real citation vouching for the wrong version is the invisible failure."""
+
+    def rows(self, *sources):
+        return [((i, s, 1, "text", 0), 1.0) for i, s in enumerate(sources)]
+
+    def test_two_versions_of_one_guide_are_flagged(self):
+        from versioning import version_conflict
+        got = version_conflict(self.rows("guide:lifestyle_protector",
+                                         "guide:lifestyle_protector_v2"))
+        self.assertEqual(len(got), 2)
+
+    def test_two_different_products_are_not_flagged(self):
+        from versioning import version_conflict
+        self.assertEqual(
+            version_conflict(self.rows("guide:lifestyle_protector", "guide:income_protector")),
+            [])
+
+    def test_dated_editions_of_one_guide_are_flagged(self):
+        from versioning import version_conflict
+        self.assertEqual(
+            len(version_conflict(self.rows("guide:lp_2024", "guide:lp_2025"))), 2)
+
+    def test_the_note_tells_the_adviser_what_to_do(self):
+        from versioning import version_note
+        note = version_note(self.rows("guide:lp", "guide:lp_v2"))
+        self.assertIn("[VERSIONS]", note)
+        self.assertIn("Open the cited page", note)
+
+    def test_a_clean_result_set_adds_nothing(self):
+        from versioning import version_note
+        self.assertEqual(version_note(self.rows("guide:income_protector")), "")
+
+
+class ReasoningDepthFollowsTheRoom(unittest.TestCase):
+    """A second model call is minutes on a CPU. Spend it where it is owed."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("FORTITUDO_THINK", None)
+
+    def tearDown(self):
+        os.environ.pop("FORTITUDO_THINK", None)
+        if self._saved is not None:
+            os.environ["FORTITUDO_THINK"] = self._saved
+
+    def test_the_compliance_rooms_reason_first(self):
+        import ask
+        for room in ("fa", "roa"):
+            self.assertTrue(ask._should_think(room), room)
+
+    def test_the_draft_rooms_answer_in_one_pass(self):
+        import ask
+        for room in ("craft", "voice", "drama", "learn"):
+            self.assertFalse(ask._should_think(room), room)
+
+    def test_it_can_be_forced_on_and_off(self):
+        import ask
+        os.environ["FORTITUDO_THINK"] = "1"
+        self.assertTrue(ask._should_think("craft"))
+        os.environ["FORTITUDO_THINK"] = "0"
+        self.assertFalse(ask._should_think("fa"))
+
+
+class TheEvalHarnessIsRealAndRuns(unittest.TestCase):
+    """A harness that cannot fail measures nothing."""
+
+    def test_the_offline_suites_pass_on_this_commit(self):
+        import eval_desk
+        conn = eval_desk.build_index()
+        for score in (eval_desk.score_routing(), eval_desk.score_retrieval(conn),
+                      eval_desk.score_grounding(), eval_desk.score_separation(),
+                      eval_desk.score_gate(), eval_desk.score_versioning(),
+                      eval_desk.score_depth()):
+            self.assertEqual(score.failed, [], f"{score.name}: {score.failed}")
+            self.assertGreater(score.total, 0, f"{score.name} has no cases")
+
+    def test_the_corpus_contains_a_deliberate_near_duplicate(self):
+        """Without rival versions the retrieval score cannot discriminate."""
+        from eval.harness import CORPUS
+        names = {p.stem for p in CORPUS.glob("*.txt")}
+        self.assertIn("lifestyle_protector", names)
+        self.assertIn("lifestyle_protector_v2", names)
+
+    def test_the_fixture_embedding_is_deterministic(self):
+        from eval.harness import fake_embed
+        self.assertEqual(fake_embed("waiting period"), fake_embed("waiting period"))
+        self.assertNotEqual(fake_embed("waiting period"), fake_embed("hearing loss"))
+
+
+
 if __name__ == "__main__":
     unittest.main()

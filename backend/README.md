@@ -110,3 +110,25 @@ on a path that handles client work. It no longer does. `auto` means this
 machine; a dead Ollama is an error the caller handles offline. Reaching xAI now
 requires `FORTITUDO_LLM=xai`, set deliberately. `XAI_API_KEY` alone does
 nothing.
+
+## Scoring the desk
+
+```bat
+python eval_desk.py            :: offline suites, no Ollama needed
+python eval_desk.py -v         :: show every case
+python eval_desk.py --live     :: also ask the real model
+python eval_desk.py --top-k 1  :: precision@1, the harder number
+```
+
+Seven suites: routing, retrieval, grounding, craft separation, the HTML gate,
+version conflict, reasoning depth. Exit code is non-zero on any regression, and
+it runs in CI on every commit.
+
+The fixture corpus in `backend/eval/corpus` is deliberately adversarial — it
+contains two versions of the same product guide whose figures differ. Without
+rival versions the retrieval score sits at 100% and measures nothing.
+
+Embeddings in the harness are a deterministic hash, not bge-m3, so the score
+depends on the desk rather than on which models happen to be installed.
+
+Add a case in `backend/eval/cases.py`. One line, and a regression names itself.

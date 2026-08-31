@@ -7,7 +7,7 @@ import store
 from retrieval import search, build_context, corpus_exclusions
 from llm import chat, health, has_model, OllamaError
 from config import CHAT_MODEL, EMBED_MODEL
-from versioning import parse_as_of, query_intent, span_check
+from versioning import parse_as_of, query_intent, span_check, version_note
 from reason import ANSWER_SHAPE, as_prompt_block, think
 from rooms import get_room
 from expert_route import classify, expert_system
@@ -88,8 +88,12 @@ def answer(conn, question, history=None, client_excerpt="", room=""):
             + client_excerpt[:12000]
             + "\n"
         )
+    # Depth by room. Advisor and RoA carry compliance weight and are worth a
+    # second model call; Craft, Voice, Drama and Learn answer in one pass so the
+    # desk stays usable on a CPU. FORTITUDO_THINK forces it on or off everywhere.
     think_block = ""
-    if os.environ.get("FORTITUDO_THINK", "").strip() in {"1", "true", "yes"}:
+    thought = None
+    if _should_think(room):
         thought = think(room, question, context + "\n" + (client_excerpt or ""))
         think_block = as_prompt_block(thought) + "\n"
     user = (
@@ -104,9 +108,38 @@ def answer(conn, question, history=None, client_excerpt="", room=""):
     # The room's own standard, doctrine and refusal — not one desk-wide prompt.
     raw = chat(expert_system(room), user, job=room)
     grounded, _missing = span_check(raw, context + "\n" + (client_excerpt or ""))
+
+    # Two versions of one guide in the extracts means a figure could come from
+    # either. Say so rather than let a real citation vouch for the wrong number.
+    grounded += version_note(results)
+
+    # The reasoning pass rates its own risk of inventing. A high rating is worth
+    # the adviser's attention precisely because the answer will not look wrong.
+    if thought is not None and getattr(thought, "invent_risk", "low") == "high":
+        grounded += (
+            "\n\n[RISK] The desk rated this answer a high risk of invention — "
+            "the evidence was thin for what was asked. Treat every figure as "
+            "unconfirmed until you have opened the cited page."
+        )
+
     if spec.draft_banner and not grounded.lstrip().startswith(spec.draft_banner.strip()):
         grounded = spec.draft_banner + grounded
     return grounded, results
+
+
+# Rooms whose answers become evidence in a regulated file. Craft, Voice, Drama
+# and Learn produce drafts a human reads and edits; these two produce the
+# reasoning behind advice, so they get the slower, better path.
+DEEP_ROOMS = ("fa", "roa")
+
+
+def _should_think(room: str) -> bool:
+    forced = os.environ.get("FORTITUDO_THINK", "").strip().lower()
+    if forced in {"1", "true", "yes", "on", "all"}:
+        return True
+    if forced in {"0", "false", "no", "off"}:
+        return False
+    return room in DEEP_ROOMS
 
 
 def print_citations(results):
