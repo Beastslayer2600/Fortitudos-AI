@@ -28,12 +28,32 @@ export function setApiBase(url: string) {
 }
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
+  const base = getApiBase();
+  let res: Response;
+  try {
+    res = await fetch(`${base}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    });
+  } catch {
+    // fetch() rejects with a bare "Failed to fetch" for a dead port, a refused
+    // connection and a blocked CORS preflight alike. Name the address instead.
+    throw new Error(
+      `Cannot reach the desk backend at ${base}. Start it with "Start Backend Only.bat" (or START_ALL.bat), then try again.`,
+    );
+  }
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) {
+    // "Not found." is app.py's unmatched-route fallback. The desk only calls
+    // routes the current backend has, so a backend that answers but does not
+    // know this one is running older code than this UI.
+    if (res.status === 404 && data.error === "Not found.") {
+      throw new Error(
+        `${base} is running an older backend that has no ${path}. Close the "Fortitudo Backend" window and start it again from this folder.`,
+      );
+    }
+    throw new Error(data.error || res.statusText);
+  }
   return data;
 }
 
@@ -42,6 +62,7 @@ export const deskApi = {
     return getApiBase();
   },
   status: () => json<{ ok: boolean; models: string[]; sources: { name: string; pages: number }[] }>("/api/status"),
+  build: () => json<{ desk_build: string; public_base: string | null }>("/api/build"),
   learn: () =>
     json<{ docs: { name: string; kind: string; bytes: number }[]; sources: { name: string; pages: number }[]; how: string[] }>("/api/learn"),
   selfLearnStatus: () =>
