@@ -6,7 +6,6 @@ import {
   GraduationCap,
   Hammer,
   Inbox,
-  LayoutGrid,
   Menu,
   MessageSquareText,
   MessagesSquare,
@@ -21,8 +20,7 @@ import { useFortitudo } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { to: "/", label: "Desk", icon: LayoutGrid, exact: true },
-  { to: "/chat", label: "Chat", icon: MessagesSquare },
+  { to: "/chat", label: "Desk", icon: MessagesSquare, exact: true },
   { to: "/ask", label: "Ask", icon: MessageSquareText },
   { to: "/library", label: "Library", icon: BookOpen },
   { to: "/clients", label: "Clients", icon: Users },
@@ -61,7 +59,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <NavBody pathname={pathname} onNavigate={() => setOpen(false)} />
               </SheetContent>
             </Sheet>
-            <Link to="/" className="flex items-center gap-2 text-fg">
+            <Link to="/chat" className="flex items-center gap-2 text-fg">
               <Mark className="size-6" />
               <span className="font-display text-lg tracking-tight">Fortitudo</span>
             </Link>
@@ -70,7 +68,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             {children}
           </main>
           <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] md:hidden">
-            {[NAV[0], NAV[1], NAV[6], NAV[9]].map((item) => {
+            {[NAV[0], NAV[1], NAV[5], NAV[8]].map((item) => {
               const active = item.exact ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`);
               const Icon = item.icon;
               return (
@@ -90,7 +88,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 function NavBody({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
   return (
     <div className="flex h-full flex-col">
-      <Link to="/" onClick={onNavigate} className="flex items-center gap-3 px-5 pt-6 pb-5">
+      <Link to="/chat" onClick={onNavigate} className="flex items-center gap-3 px-5 pt-6 pb-5">
         <Mark className="size-8 text-accent" />
         <div>
           <div className="font-display text-lg leading-tight tracking-tight">Fortitudo</div>

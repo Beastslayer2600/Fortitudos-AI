@@ -23,5 +23,13 @@ origin is reflected only when it is the desk: any host, on port 8080.
 1. Use http://localhost:8080, not the Vercel URL.
 2. Home backend = http://127.0.0.1:8000
 3. Open http://127.0.0.1:8000/api/status in the same browser — you must see JSON.
-4. If the desk is on a non-standard port, set `FORTITUDO_DESK_PORT` to match and
+4. Open http://127.0.0.1:8000/api/build. If that 404s, the "Fortitudo Backend"
+   window is running code from before the Learn routes and this CORS handler
+   existed. Close it and start it again from this folder — `START_ALL.bat` frees
+   port 8000 first, so it does this for you.
+5. If the desk is on a non-standard port, set `FORTITUDO_DESK_PORT` to match and
    restart `python app.py`.
+
+A stale backend fails in two ways that look like a CORS bug but are not: the
+preflight `OPTIONS` comes back **501** (no `do_OPTIONS` in that older build) and
+`/api/learn` comes back **404**. Restarting fixes both.

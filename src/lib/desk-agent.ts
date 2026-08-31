@@ -11,6 +11,10 @@ import type {
 import { CLIENT_STATUSES, DOC_TYPES, NOTE_TYPES } from "./types";
 import { matchClients } from "./desk-chat";
 import { buildFnaDraft } from "./fna-form";
+import { briefToChatLines, buildOpsBrief } from "./ops-brief";
+import { loadLedger, saveLedger } from "./craft-ledger";
+import type { CraftLead } from "./craft";
+import { slug } from "./utils";
 
 export type DeskAgentAction =
   | { type: "select_client"; clientId?: string; nameQuery?: string }
@@ -46,6 +50,30 @@ export type DeskAgentAction =
       type: "save_fna_note";
       clientId?: string;
       title?: string;
+    }
+  | { type: "list_today" }
+  | { type: "list_pending" }
+  | {
+      type: "schedule_followup";
+      who?: string;
+      whenLabel?: string;
+      note?: string;
+      line?: "fa" | "craft" | "drama";
+    }
+  | {
+      type: "intake_lead";
+      name?: string;
+      city?: string;
+      businessType?: string;
+      note?: string;
+    }
+  | {
+      type: "create_invoice";
+      who?: string;
+      amount?: string;
+      line?: "fa" | "craft";
+      dueLabel?: string;
+      memo?: string;
     };
 
 export type DeskAgentResult = {
@@ -67,6 +95,8 @@ export type DeskAgentContext = {
   fnaFactLines: string[];
   recentMessages: { role: string; content: string }[];
   userMessage: string;
+  sessions?: import("./types").DramaSession[];
+  dropItems?: import("./types").DropItem[];
 };
 
 export type DeskMutators = {
@@ -130,7 +160,7 @@ export function applyDeskActions(
     if (action.type === "update_client") {
       const id = resolveClientId(action, ctx, activeClientId);
       if (!id) {
-        applied.push("update_client skipped — no client");
+        applied.push("update_client skipped \u2014 no client");
         continue;
       }
       const patch: Partial<Client> = {};
@@ -150,7 +180,7 @@ export function applyDeskActions(
     if (action.type === "add_note") {
       const id = resolveClientId(action, ctx, activeClientId);
       if (!id) {
-        applied.push("add_note skipped — no client");
+        applied.push("add_note skipped \u2014 no client");
         continue;
       }
       const noteType = (NOTE_TYPES as readonly string[]).includes(action.noteType)
@@ -163,14 +193,14 @@ export function applyDeskActions(
         content: action.content || "",
       });
       activeClientId = id;
-      applied.push(`Added ${noteType} note “${action.title}”`);
+      applied.push(`Added ${noteType} note`);
       continue;
     }
 
     if (action.type === "add_document") {
       const id = resolveClientId(action, ctx, activeClientId);
       if (!id) {
-        applied.push("add_document skipped — no client");
+        applied.push("add_document skipped \u2014 no client");
         continue;
       }
       const docType = (DOC_TYPES as readonly string[]).includes(action.docType)
@@ -190,19 +220,15 @@ export function applyDeskActions(
     if (action.type === "upsert_fna_facts") {
       const id = resolveClientId(action, ctx, activeClientId);
       if (!id) {
-        applied.push("upsert_fna_facts skipped — no client");
+        applied.push("upsert_fna_facts skipped \u2014 no client");
         continue;
       }
       activeClientId = id;
-      const lines = Object.entries(action.facts || {}).map(
-        ([k, v]) => `${k}: ${v}`,
-      );
+      const lines = Object.entries(action.facts || {}).map(([k, v]) => `${k}: ${v}`);
       if (action.meetingDate) lines.push(`meeting_date: ${action.meetingDate}`);
       fnaFactLines = [...fnaFactLines, ...lines, ctx.userMessage].slice(-40);
-
       const client = ctx.clients.find((c) => c.id === id);
       if (client) {
-        // Use latest client patch from memory if name was updated in same turn — read from ctx is fine
         const draft = buildFnaDraft({
           client,
           documents: ctx.documents.filter((d) => d.clientId === id),
@@ -214,9 +240,7 @@ export function applyDeskActions(
           adviserName: "Gert Fourie",
         });
         fnaMarkdown = draft.markdown;
-        applied.push(
-          `FNA draft updated (${draft.filledCount} filled / ${draft.blankCount} blank)`,
-        );
+        applied.push(`FNA draft updated (${draft.filledCount} filled / ${draft.blankCount} blank)`);
       }
       continue;
     }
@@ -224,7 +248,7 @@ export function applyDeskActions(
     if (action.type === "save_fna_note") {
       const id = resolveClientId(action, ctx, activeClientId);
       if (!id) {
-        applied.push("save_fna_note skipped — no client");
+        applied.push("save_fna_note skipped \u2014 no client");
         continue;
       }
       const client = ctx.clients.find((c) => c.id === id);
@@ -241,11 +265,87 @@ export function applyDeskActions(
       mutators.addNote({
         clientId: id,
         noteType: "FNA",
-        title: action.title || `FNA intake draft — ${client.name}`,
+        title: action.title || `FNA intake draft \u2014 ${client.name}`,
         content: draft.markdown,
       });
       fnaMarkdown = draft.markdown;
       applied.push(`Saved FNA draft note on ${client.name}`);
+      continue;
+    }
+
+    if (action.type === "list_today" || action.type === "list_pending") {
+      const brief = buildOpsBrief({
+        clients: ctx.clients,
+        sessions: ctx.sessions ?? [],
+        dropItems: ctx.dropItems ?? [],
+      });
+      const lines = briefToChatLines(brief);
+      applied.push(action.type === "list_today" ? "Listed today's brief" : "Listed pending items");
+      fnaMarkdown = (fnaMarkdown ? fnaMarkdown + "\n\n" : "") + lines;
+      continue;
+    }
+
+    if (action.type === "schedule_followup") {
+      const who = (action.who || "").trim() || "unassigned";
+      const when = (action.whenLabel || "soon").trim();
+      const line = action.line || "fa";
+      const note = (action.note || "").trim();
+      const title = `Follow-up \u00b7 ${who} \u00b7 ${when}`;
+      const content = [`Line: ${line}`, `When: ${when}`, note ? `Note: ${note}` : null, "(Stub) Full calendar write lands in a later ops store."].filter(Boolean).join("\n");
+      if (line === "fa") {
+        const id = resolveClientId({ nameQuery: who }, ctx, activeClientId);
+        if (id) {
+          mutators.addNote({ clientId: id, noteType: "Meeting", title, content });
+          activeClientId = id;
+          applied.push(`Scheduled follow-up note on client for ${when}`);
+          continue;
+        }
+      }
+      applied.push(`Follow-up logged (stub): ${title}`);
+      fnaMarkdown = (fnaMarkdown ? fnaMarkdown + "\n\n" : "") + content;
+      continue;
+    }
+
+    if (action.type === "intake_lead") {
+      const name = (action.name || "").trim();
+      if (!name) {
+        applied.push("intake_lead skipped \u2014 name required");
+        continue;
+      }
+      const lead: CraftLead = {
+        id: slug(name) + "-" + Date.now().toString(36),
+        name,
+        city: (action.city || "").trim(),
+        type: (action.businessType || "").trim() || "business",
+        address: "",
+        phone: "",
+        website: "",
+        email: "",
+        note: (action.note || "").trim(),
+        touch: "untouched",
+        photos: [],
+        savedAt: new Date().toISOString(),
+        source: "hand",
+      };
+      try {
+        const book = loadLedger();
+        saveLedger([lead, ...book]);
+        applied.push(`Craft lead filed: ${name}`);
+      } catch {
+        applied.push(`Craft lead captured in memory only: ${name}`);
+      }
+      continue;
+    }
+
+    if (action.type === "create_invoice") {
+      const who = (action.who || "client").trim();
+      const amount = (action.amount || "").trim() || "TBD";
+      const line = action.line || "craft";
+      const due = (action.dueLabel || "").trim();
+      const memo = (action.memo || "").trim();
+      const block = ["INVOICE STUB (not yet in billing store)", `Who: ${who}`, `Line: ${line}`, `Amount: ${amount}`, due ? `Due: ${due}` : null, memo ? `Memo: ${memo}` : null].filter(Boolean).join("\n");
+      applied.push(`Invoice stub for ${who} \u00b7 ${amount}`);
+      fnaMarkdown = (fnaMarkdown ? fnaMarkdown + "\n\n" : "") + block;
       continue;
     }
   }
@@ -304,21 +404,13 @@ export function buildContextBlock(ctx: DeskAgentContext): string {
       `email: ${active.email}`,
       `phone: ${active.phone}`,
       `documents:`,
-      ...docs.map(
-        (d) =>
-          `  - [${d.docType}] ${d.filename}: ${(d.text || "").slice(0, 280)}`,
-      ),
+      ...docs.map((d) => `  - [${d.docType}] ${d.filename}: ${(d.text || "").slice(0, 280)}`),
       `notes:`,
-      ...notes.map(
-        (n) => `  - [${n.noteType}] ${n.title}: ${n.content.slice(0, 280)}`,
-      ),
+      ...notes.map((n) => `  - [${n.noteType}] ${n.title}: ${n.content.slice(0, 280)}`),
       `emails:`,
       ...emails.map((e) => `  - ${e.subject} (${e.status})`),
       `projections:`,
-      ...projs.map(
-        (p) =>
-          `  - ${p.name}: current R${p.inputs.currentValue}, monthly R${p.inputs.monthlyContribution}`,
-      ),
+      ...projs.map((p) => `  - ${p.name}: current R${p.inputs.currentValue}, monthly R${p.inputs.monthlyContribution}`),
       `fna_fact_lines:`,
       ...ctx.fnaFactLines.slice(-30).map((l) => `  - ${l}`),
     ].join("\n");
@@ -329,17 +421,7 @@ export function buildContextBlock(ctx: DeskAgentContext): string {
     .map((m) => `${m.role}: ${m.content.slice(0, 1200)}`)
     .join("\n\n");
 
-  return `CLIENTS ON DESK:
-${list || "(none)"}
-
-ACTIVE CLIENT:
-${activeBlock}
-
-RECENT CHAT:
-${history || "(empty)"}
-
-ADVISER MESSAGE:
-${ctx.userMessage}`;
+  return `CLIENTS ON DESK:\n${list || "(none)"}\n\nACTIVE CLIENT:\n${activeBlock}\n\nRECENT CHAT:\n${history || "(empty)"}\n\nADVISER MESSAGE:\n${ctx.userMessage}`;
 }
 
 export const DESK_AGENT_SYSTEM = `You are the Fortitudo desk agent for a South African financial adviser (FAIS). You reason carefully, then edit the desk records when asked.
@@ -372,6 +454,14 @@ Action schemas:
 { "type": "add_document", "clientId": "optional", "filename": "...", "docType": "...", "text": "optional extract" }
 { "type": "upsert_fna_facts", "clientId": "optional", "meetingDate": "optional", "facts": { "net_salary": "55000", "occupation": "Engineer", ... } }
 { "type": "save_fna_note", "clientId": "optional", "title": "optional" }
+{ "type": "list_today" }
+{ "type": "list_pending" }
+{ "type": "schedule_followup", "who": "optional", "whenLabel": "optional", "note": "optional", "line": "fa|craft|drama" }
+{ "type": "intake_lead", "name": "...", "city": "optional", "businessType": "optional", "note": "optional" }
+{ "type": "create_invoice", "who": "optional", "amount": "optional", "line": "fa|craft", "dueLabel": "optional", "memo": "optional" }
 
-FNA fact keys (use snake_case): net_salary, gross_salary, spouse_net_salary, occupation, employer, id_number, date_of_birth, residential_address, marital_status, smoker, dependants, number_of_children, housing, transport, medical_scheme, target_retirement_age, attitude_to_risk, top_priority_1, top_priority_2, existing_life, income_protection, etc. — any label that maps to the intake form.
+Use list_today / list_pending when the adviser asks what is on the plate, what is pending, or for a morning brief.
+Use schedule_followup for reminders; intake_lead for Craft/web-design shops; create_invoice only as a stub until billing ships.
+
+FNA fact keys (use snake_case): net_salary, gross_salary, spouse_net_salary, occupation, employer, id_number, date_of_birth, residential_address, marital_status, smoker, dependants, number_of_children, housing, transport, medical_scheme, target_retirement_age, attitude_to_risk, top_priority_1, top_priority_2, existing_life, income_protection, etc. \u2014 any label that maps to the intake form.
 `;
