@@ -10,7 +10,7 @@ from typing import List, Union, Dict, Any, Optional, Iterator
 
 import compute
 from config import (
-    OLLAMA_HOST, EMBED_MODEL, CHAT_MODEL,
+    OLLAMA_HOST, EMBED_MODEL, CHAT_MODEL, BASE_MODEL,
     CHAT_TEMPERATURE, CHAT_NUM_CTX, CHAT_NUM_PREDICT,
 )
 
@@ -55,14 +55,15 @@ def _post(path: str, payload: Dict[str, Any], timeout: int = TIMEOUT,
     return r.json()
 
 
-def health() -> List[str]:
+def health(host: str = "") -> List[str]:
     """Return list of installed model names, or raise with a clear message."""
+    target = host or OLLAMA_HOST
     try:
-        r = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=10)
+        r = requests.get(f"{target}/api/tags", timeout=10)
         r.raise_for_status()
     except requests.exceptions.ConnectionError:
         raise OllamaError(
-            f"Cannot reach Ollama at {OLLAMA_HOST}.\n"
+            f"Cannot reach Ollama at {target}.\n"
             "Start it with:  ollama serve"
         )
     return [m["name"] for m in r.json().get("models", [])]
@@ -102,6 +103,32 @@ def embed(texts: Union[str, List[str]]) -> List[List[float]]:
         data = _post("/api/embeddings", {"model": EMBED_MODEL, "prompt": t})
         out.append(data["embedding"])
     return out
+
+
+_resolved: Dict[str, str] = {}
+
+
+def resolve_model(name: str, host: str = "") -> str:
+    """The model to actually ask for, falling back when it is not built.
+
+    `fortitudo` is the desk's own model and the default, but it only exists
+    after `ollama create`. Rather than fail a fresh clone with a 404, fall back
+    to the base model once and remember the answer — a per-call check would put
+    an HTTP round trip in front of every question.
+    """
+    key = f"{host or OLLAMA_HOST}|{name}"
+    if key in _resolved:
+        return _resolved[key]
+    chosen = name
+    try:
+        installed = health(host)
+        if not has_model(installed, name) and has_model(installed, BASE_MODEL):
+            chosen = BASE_MODEL
+    except OllamaError:
+        # Ollama is down. Ask for what was configured and let the call report it.
+        return name
+    _resolved[key] = chosen
+    return chosen
 
 
 _THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
@@ -150,7 +177,7 @@ def chat(system: str, user: str, temperature: Optional[float] = None,
     # on CPU (and can exhaust num_predict before the answer). /no_think is a
     # second belt for models that ignore the API flag.
     payload = {
-        "model": plan.model,
+        "model": resolve_model(plan.model, plan.host),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": "/no_think\n" + user},

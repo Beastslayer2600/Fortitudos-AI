@@ -1,16 +1,16 @@
 /**
  * Local-first chat for the Fortitudo desk.
  *
- * Priority (auto):
- *   1. Ollama on this machine (OLLAMA_HOST, default http://127.0.0.1:11434)
- *   2. xAI if XAI_API_KEY is set
- *   3. offline (caller handles)
+ * The desk is local-first and it holds client files. A cloud call is therefore
+ * never a fallback — only a choice. `auto` means Ollama, and a dead Ollama is
+ * an error the caller handles offline, NOT a reason to send the prompt to a
+ * third party. Reaching xAI requires FORTITUDO_LLM=xai, set deliberately.
  *
  * Env:
  *   OLLAMA_HOST=http://127.0.0.1:11434
- *   OLLAMA_MODEL=qwen2.5:7b          (or llama3.2:3b, qwen3:8b, …)
- *   FORTITUDO_LLM=auto|ollama|xai    (default auto)
- *   XAI_API_KEY=…
+ *   OLLAMA_MODEL=fortitudo           (falls back to FORTITUDO_CHAT_MODEL)
+ *   FORTITUDO_LLM=auto|ollama|xai    (default auto — local only)
+ *   XAI_API_KEY=…                    (inert unless FORTITUDO_LLM=xai)
  *   XAI_MODEL=grok-4.5
  */
 
@@ -30,8 +30,20 @@ export function ollamaHost() {
   );
 }
 
+/**
+ * The chat model. The Python desk reads FORTITUDO_CHAT_MODEL; this path used to
+ * read only OLLAMA_MODEL and default to something else entirely, so the two
+ * halves of the desk answered on different models. One name now, and the
+ * default is the desk's own model rather than a stock one.
+ */
+export const DEFAULT_MODEL = "fortitudo";
+
 export function ollamaModel() {
-  return process.env.OLLAMA_MODEL?.trim() || "qwen2.5:7b";
+  return (
+    process.env.OLLAMA_MODEL?.trim() ||
+    process.env.FORTITUDO_CHAT_MODEL?.trim() ||
+    DEFAULT_MODEL
+  );
 }
 
 export function xaiModel() {
@@ -164,24 +176,18 @@ export async function llmChat(
     return callXai(messages, { temperature, maxTokens });
   }
 
-  // auto: try Ollama, then xAI
+  // auto is local. A dead Ollama is an error, not a reason to leave the machine:
+  // the prompt on this path can carry client work, and the moment it silently
+  // reached a third party the desk stopped being local-first without saying so.
   const local = await callOllama(messages, { temperature, maxTokens });
   if (local.ok) return local;
-
-  if (process.env.XAI_API_KEY) {
-    const cloud = await callXai(messages, { temperature, maxTokens });
-    if (cloud.ok) return cloud;
-    return {
-      ok: false,
-      provider: "none",
-      error: `Ollama: ${local.error} · xAI: ${cloud.error}`,
-    };
-  }
 
   return {
     ok: false,
     provider: "ollama",
-    error: local.error,
+    error: process.env.XAI_API_KEY
+      ? `${local.error} — xAI is configured but is not used as a fallback. Set FORTITUDO_LLM=xai to send this prompt off the machine.`
+      : local.error,
   };
 }
 
@@ -237,14 +243,18 @@ export async function probeLlm(): Promise<{
   let preferred: "ollama" | "xai" | "none" = "none";
   if (mode === "ollama") preferred = ollamaOk ? "ollama" : "none";
   else if (mode === "xai") preferred = xaiOk ? "xai" : "none";
-  else if (ollamaOk) preferred = "ollama";
-  else if (xaiOk) preferred = "xai";
+  // No `else if (xaiOk)`: auto never prefers the cloud, however healthy it is.
+  else preferred = ollamaOk ? "ollama" : "none";
 
   return {
     ollama: { ok: ollamaOk, host, model, detail: ollamaDetail },
     xai: {
       ok: xaiOk,
-      detail: xaiOk ? "XAI_API_KEY set" : "XAI_API_KEY not set",
+      detail: xaiOk
+        ? mode === "xai"
+          ? "XAI_API_KEY set · in use (FORTITUDO_LLM=xai)"
+          : "XAI_API_KEY set · not used — auto stays on this machine"
+        : "XAI_API_KEY not set",
     },
     preferred,
   };

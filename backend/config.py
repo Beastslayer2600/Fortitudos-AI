@@ -67,7 +67,16 @@ EMBED_MODEL = os.environ.get("FORTITUDO_EMBED_MODEL", "bge-m3")
 # Expect roughly 2-5 tokens/sec on CPU. A short answer takes 30-60 seconds.
 # That is fine for desk work and too slow to use live in a client meeting -
 # use `ask.py --show` for that, which needs no model at all.
-CHAT_MODEL = os.environ.get("FORTITUDO_CHAT_MODEL", "llama3.2:3b")
+# The desk's own model, built by backend/model/Modelfile:
+#   ollama create fortitudo -f backend/model/Modelfile
+# It is llama3.2 (or whatever base you point it at) with the identity, the
+# refusals and the desk's sampling settings baked in, so a caller that forgets
+# to send a room prompt still gets Fortitudo rather than a stock assistant.
+#
+# BASE_MODEL is what llm.py falls back to when `fortitudo` has not been built
+# yet. A fresh clone therefore still runs; it just answers as the base model.
+CHAT_MODEL = os.environ.get("FORTITUDO_CHAT_MODEL", "fortitudo")
+BASE_MODEL = os.environ.get("FORTITUDO_BASE_MODEL", "llama3.2:3b")
 
 # Generation knobs (CPU-friendly defaults)
 CHAT_TEMPERATURE = float(os.environ.get("FORTITUDO_CHAT_TEMPERATURE", "0.1"))

@@ -6,6 +6,7 @@ import {
   type DeskAgentAction,
 } from "./desk-agent";
 import { llmChat, llmComplete, probeLlm } from "./llm";
+import { ROLE_BOUNDARY, withIdentity } from "./fortitudo";
 
 /** Polish a grounded meeting pack — never invent product figures. */
 export const refineMeetingPrep = createServerFn({ method: "POST" })
@@ -20,14 +21,16 @@ export const refineMeetingPrep = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data }) => {
-    const system = `You are an internal desk assistant for a South African financial adviser (FAIS). You help prep meetings and FNA working notes.
+    // An FNA working note is RoA room work — the room whose doctrine says the
+    // human signs, the banner stays on, and gaps get named rather than filled.
+    const system = withIdentity("roa", `You are preparing an internal desk brief. You help prep meetings and FNA working notes.
 
 Rules:
 - Use ONLY facts present in the provided pack. Do not invent returns, premiums, benefit %, waiting periods, or product terms.
 - If something is missing, say it is missing and list it as a gap to close in the meeting.
 - This is an internal working note, not advice to a client.
 - Keep a calm, structured tone. Short headings. Actionable checklist.
-- End with: "Verify against filed documents and the product index before the meeting. Advice remains yours under FAIS."`;
+- End with: "Verify against filed documents and the product index before the meeting. Advice remains yours under FAIS."`);
 
     const user = `Adviser said: ${data.userMessage}
 
@@ -154,8 +157,11 @@ export const runDeskAgent = createServerFn({ method: "POST" })
       })),
     });
 
-    // Nudge local models to emit pure JSON
-    const system = `${DESK_AGENT_SYSTEM}
+    // The desk agent decides actions across every room, so it carries the
+    // identity and the FSP boundary rather than any one room's doctrine.
+    const system = `${ROLE_BOUNDARY}
+
+${DESK_AGENT_SYSTEM}
 
 IMPORTANT for local models: Reply with a single JSON object only. No markdown fences, no text before or after the JSON.`;
 

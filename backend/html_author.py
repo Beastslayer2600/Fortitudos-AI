@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 # A whole document, not a spec. The desk default would truncate this mid-tag.
@@ -124,6 +125,32 @@ def gate(html: str, allowed: str, *, live: bool = False) -> Verdict:
     return Verdict(not problems, problems)
 
 
+DOCTRINE_FILE = Path(__file__).resolve().parent / "docs" / "craft_html_doctrine.md"
+
+
+def doctrine() -> str:
+    """The Craft HTML doctrine, plus any lessons filed under Learn.
+
+    The gate rejects; doctrine is how the model learns what it rejects *before*
+    spending three thousand tokens finding out. Filed Craft lessons ride along
+    so a rule taught once applies to every later page.
+    """
+    chunks = []
+    try:
+        if DOCTRINE_FILE.exists():
+            chunks.append(DOCTRINE_FILE.read_text(encoding="utf-8")[:3000])
+    except OSError:
+        pass
+    try:
+        from learn_teach import craft_lessons_text
+        extra = craft_lessons_text(1200)
+        if extra:
+            chunks.append("LESSONS FILED IN LEARN (Craft):\n" + extra)
+    except Exception:
+        pass
+    return "\n\n".join(chunks)
+
+
 def _facts_block(facts) -> str:
     rows = [
         f"Shop name: {facts.name}",
@@ -164,8 +191,12 @@ def author(facts, spec=None, brief: str = "", *, live: bool = False,
         "reading 'Internal mockup · not live'.\n"
     )
 
+    rules = doctrine()
     for attempt in range(1, attempts + 1):
-        user = f"FACTS (the only facts you may state):\n{allowed}\n{guidance}{marker}"
+        user = (
+            (f"DOCTRINE (how this desk builds a shop page):\n{rules}\n\n" if rules else "")
+            + f"FACTS (the only facts you may state):\n{allowed}\n{guidance}{marker}"
+        )
         if notes:
             user += "\nYour previous attempt was rejected for:\n- " + "\n- ".join(notes[-6:])
         try:

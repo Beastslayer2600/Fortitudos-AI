@@ -64,3 +64,49 @@ phone number, price, time or year. On a 3B model expect refusals; the
 deterministic template runs instead and `/api/craft/page` returns
 `authored: false` with the reason. A coder model raises the pass rate more
 than any prompt change. `FORTITUDO_HTML_AUTHOR=0` turns authoring off.
+
+## The Fortitudo model
+
+The desk's default chat model is `fortitudo` — not a stock Ollama model. It is
+built from `backend/model/Modelfile`, which takes a base model and bakes in the
+identity, the refusals, the answer shape and the desk's sampling settings.
+
+```bat
+backend\model\build.bat
+```
+
+or by hand:
+
+```bat
+ollama create fortitudo -f backend\model\Modelfile
+ollama list
+```
+
+Set `FORTITUDO_BASE_MODEL` before building to change the base — use
+`qwen2.5-coder:7b` on a machine with a GPU, `llama3.2:3b` when RAM is tight.
+
+**If you have not built it**, nothing breaks: `llm.resolve_model()` checks once,
+falls back to `FORTITUDO_BASE_MODEL` (default `llama3.2:3b`), and caches the
+answer so it is one probe, not one per question.
+
+The Modelfile is a *floor*, not a ceiling. The Python desk always sends a room
+prompt (`expert_route.expert_system`) and that governs. The baked-in SYSTEM is
+what a caller gets when it forgets to send one.
+
+## Where the AI lives
+
+Two paths reach a model, and both are now the same desk:
+
+- **Python** — `backend/llm.py` → `expert_route.expert_system(room)`. Rooms,
+  doctrine, retrieval, `span_check`.
+- **Browser** — `src/lib/llm.ts` → `src/lib/fortitudo.ts`. Mirrors the Python
+  identity, standards and refusals. `src/lib/fortitudo.test.ts` reads
+  `expert_route.py` and fails if the two drift apart.
+
+### The desk does not call the cloud
+
+`src/lib/llm.ts` used to fall back to xAI whenever Ollama was down — silently,
+on a path that handles client work. It no longer does. `auto` means this
+machine; a dead Ollama is an error the caller handles offline. Reaching xAI now
+requires `FORTITUDO_LLM=xai`, set deliberately. `XAI_API_KEY` alone does
+nothing.

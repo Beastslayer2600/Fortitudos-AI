@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import re
 import tempfile
 import threading
 import unittest
@@ -717,6 +718,18 @@ class AStubOllama(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _send(self, payload):
+        raw = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        # resolve_model() asks which models exist before it asks for an answer.
+        self._send({"models": [{"name": "fortitudo:latest"}, {"name": "llama3.2:3b"}]})
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"] or 0)))
         if "web developer" in body["messages"][0]["content"]:
@@ -724,12 +737,7 @@ class AStubOllama(BaseHTTPRequestHandler):
         else:
             out = json.dumps({"headline": "Burst pipe or cold geyser - call us in Kempton Park",
                               "lead": "Call or WhatsApp.", "intent": "emergency"})
-        raw = json.dumps({"message": {"content": out}}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
+        self._send({"message": {"content": out}})
 
 
 class TheModelWritesTheServedPage(unittest.TestCase):
@@ -920,6 +928,171 @@ class EveryModelCallNamesItsJob(unittest.TestCase):
         jobs = {p.job for p in compute.plans(llm.OLLAMA_HOST)}
         for expected in ["fa", "roa", "craft", "filing", "sight"]:
             self.assertIn(expected, jobs)
+
+
+
+class TheDeskAsksForItsOwnModel(unittest.TestCase):
+    """`fortitudo` is the default. A fresh clone that lacks it still runs."""
+
+    def setUp(self):
+        import llm
+        self.llm = llm
+        llm._resolved.clear()
+
+    def tearDown(self):
+        self.llm._resolved.clear()
+
+    def _installed(self, names):
+        real = self.llm.health
+        self.llm.health = lambda host="": list(names)
+        return real
+
+    def test_the_configured_default_is_the_desks_own_model(self):
+        import config
+        self.assertEqual(config.CHAT_MODEL, "fortitudo")
+
+    def test_it_uses_fortitudo_when_it_is_built(self):
+        real = self._installed(["fortitudo:latest", "llama3.2:3b"])
+        try:
+            self.assertEqual(self.llm.resolve_model("fortitudo"), "fortitudo")
+        finally:
+            self.llm.health = real
+
+    def test_it_falls_back_to_the_base_model_when_it_is_not(self):
+        import config
+        real = self._installed(["llama3.2:3b"])
+        try:
+            self.assertEqual(self.llm.resolve_model("fortitudo"), config.BASE_MODEL)
+        finally:
+            self.llm.health = real
+
+    def test_an_explicit_model_is_never_second_guessed(self):
+        real = self._installed(["qwen2.5-coder:7b", "llama3.2:3b"])
+        try:
+            self.assertEqual(self.llm.resolve_model("qwen2.5-coder:7b"), "qwen2.5-coder:7b")
+        finally:
+            self.llm.health = real
+
+    def test_a_dead_ollama_reports_rather_than_silently_substituting(self):
+        real = self.llm.health
+
+        def down(host=""):
+            raise self.llm.OllamaError("not running")
+
+        self.llm.health = down
+        try:
+            self.assertEqual(self.llm.resolve_model("fortitudo"), "fortitudo")
+        finally:
+            self.llm.health = real
+
+    def test_the_lookup_is_cached_not_run_per_question(self):
+        calls = []
+        real = self.llm.health
+        self.llm.health = lambda host="": calls.append(1) or ["fortitudo:latest"]
+        try:
+            for _ in range(5):
+                self.llm.resolve_model("fortitudo")
+        finally:
+            self.llm.health = real
+        self.assertEqual(len(calls), 1, "one probe, not one per call")
+
+    def test_each_host_is_resolved_separately(self):
+        """The craft box and this machine can have different models installed."""
+        seen = []
+        real = self.llm.health
+        self.llm.health = lambda host="": seen.append(host) or ["fortitudo:latest"]
+        try:
+            self.llm.resolve_model("fortitudo", "http://127.0.0.1:11434")
+            self.llm.resolve_model("fortitudo", "http://192.168.1.50:11434")
+        finally:
+            self.llm.health = real
+        self.assertEqual(len(seen), 2)
+
+
+class TheModelfileIsTheDesksIdentity(unittest.TestCase):
+    """The built model must carry the rails, or building it is decoration."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (Path(__file__).parent / "model" / "Modelfile").read_text(encoding="utf-8")
+
+    def test_it_declares_a_base_and_a_system(self):
+        self.assertIn("FROM ", self.text)
+        self.assertIn("SYSTEM ", self.text)
+
+    def test_it_states_the_fsp_boundary(self):
+        self.assertIn("FSP 2409", self.text)
+        self.assertIn("You are not the FSP", self.text)
+
+    def test_it_carries_the_refusals_the_code_enforces(self):
+        for rule in ["waiting period", "24/7", "testimonial", "opening hours"]:
+            self.assertIn(rule, self.text, rule)
+
+    def test_it_keeps_the_two_businesses_apart(self):
+        self.assertIn("separate businesses", self.text)
+
+    def test_it_defers_to_the_room_prompt(self):
+        """A baked-in prompt must be the floor, never override a room."""
+        self.assertIn("These are the floor.", self.text)
+
+    def test_the_context_window_fits_a_room_prompt_plus_extracts(self):
+        import config
+        m = re.search(r"PARAMETER num_ctx (\d+)", self.text)
+        self.assertIsNotNone(m)
+        self.assertGreaterEqual(int(m.group(1)), config.CHAT_NUM_CTX)
+
+
+
+class DoctrineReachesTheModel(unittest.TestCase):
+    """A doctrine file nobody loads is a file, not knowledge."""
+
+    def test_the_html_doctrine_is_loaded(self):
+        import html_author
+        text = html_author.doctrine()
+        self.assertGreater(len(text), 500)
+        for rule in ["[HOURS]", "24/7", "INTERNAL MOCKUP", "noindex"]:
+            self.assertIn(rule, text, rule)
+
+    def test_the_doctrine_is_in_the_prompt_the_model_sees(self):
+        import llm, html_author
+        from trade_page import facts_from_text
+        seen = {}
+        real = llm._post
+        llm._post = lambda path, payload, timeout=llm.TIMEOUT, host="": seen.update(
+            user=payload["messages"][1]["content"]) or {"message": {"content": "x"}}
+        try:
+            html_author.author(facts_from_text("Joe Plumbing", ""), brief="")
+        finally:
+            llm._post = real
+        self.assertIn("DOCTRINE", seen["user"])
+        self.assertIn("[HOURS]", seen["user"])
+
+    def test_the_doctrine_teaches_what_the_gate_actually_checks(self):
+        """Doctrine that disagrees with the gate trains the model to fail."""
+        import html_author
+        text = html_author.doctrine().lower()
+        for banned in ["24/7", "award-winning", "best in", "guaranteed"]:
+            self.assertIn(banned, text, f"gate bans {banned} but doctrine never says so")
+        self.assertIn("script", text)
+        self.assertIn("<form", text.replace("`", ""))
+
+    def test_craft_doctrine_no_longer_says_html_is_not_its_job(self):
+        """html_author made that instruction false; a stale rule is worse than none."""
+        import reason
+        self.assertNotIn("Design HTML is not your job", reason.DOCTRINE["craft"])
+        self.assertIn("author the HTML", reason.DOCTRINE["craft"])
+
+    def test_the_separation_doctrine_exists_and_names_both_sides(self):
+        text = (Path(__file__).parent / "docs" / "desk_separation_doctrine.md").read_text(encoding="utf-8")
+        self.assertIn("Craft lead", text)
+        self.assertIn("FA client", text)
+        self.assertIn("never share a record", text)
+
+    def test_every_doctrine_file_is_listed_in_the_index(self):
+        docs = Path(__file__).parent / "docs"
+        index = (docs / "KNOWLEDGE_INDEX.md").read_text(encoding="utf-8")
+        for name in ["craft_html_doctrine.md", "desk_separation_doctrine.md"]:
+            self.assertIn(name, index, f"{name} is not discoverable from the index")
 
 
 
