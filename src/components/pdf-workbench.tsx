@@ -29,7 +29,7 @@ import { Textarea } from "@/components/ui/textarea";
  * change the document on the left. That is not a setting.
  */
 
-type Props = { docId: number | string; onClose?: () => void };
+type Props = { docId: number | string; clientId?: string; onClose?: () => void };
 
 const ACTION_LABEL: Record<PdfAction, string> = {
   fill: "Fill form",
@@ -40,7 +40,7 @@ const ACTION_LABEL: Record<PdfAction, string> = {
   extract: "Extract to draft",
 };
 
-export function PdfWorkbench({ docId, onClose }: Props) {
+export function PdfWorkbench({ docId, clientId, onClose }: Props) {
   const [doc, setDoc] = useState<PdfDescription | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<PdfAction | null>(null);
@@ -66,7 +66,7 @@ export function PdfWorkbench({ docId, onClose }: Props) {
     setLoading(true);
     setError("");
     try {
-      const next = await deskApi.pdf(docId);
+      const next = await deskApi.pdf(docId, clientId);
       setDoc(next);
       setFields(Object.fromEntries(next.fields.map((f) => [f.name, f.value])));
       if (next.fields.length) setTab("fill");
@@ -75,7 +75,7 @@ export function PdfWorkbench({ docId, onClose }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [docId]);
+  }, [docId, clientId]);
 
   useEffect(() => {
     void load();
@@ -84,7 +84,7 @@ export function PdfWorkbench({ docId, onClose }: Props) {
   async function run(action: PdfAction, body: Record<string, unknown>) {
     setBusy(action);
     try {
-      const result = await deskApi.pdfAction(docId, action, body);
+      const result = await deskApi.pdfAction(docId, action, body, clientId);
       setResults((prev) => [result, ...prev]);
       toast.success(`Saved as ${result.saved_as ?? "a new draft"}`);
     } catch (e) {

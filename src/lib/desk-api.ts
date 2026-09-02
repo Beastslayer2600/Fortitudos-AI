@@ -142,16 +142,29 @@ export const deskApi = {
       documents: { id: number; filename: string; doc_type: string; content_type?: string;
                    size?: number; created_at?: string }[] }>(`/api/clients/${encodeURIComponent(clientId)}`),
   /** What a filed PDF is: pages, text, form fields, and what can be done to it. */
-  pdf: (docId: string | number) =>
-    json<PdfDescription>(`/api/pdf/${encodeURIComponent(String(docId))}`),
+  pdf: (docId: string | number, clientId?: string) =>
+    json<PdfDescription>(
+      `/api/pdf/${encodeURIComponent(String(docId))}` +
+        (clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""),
+    ),
   /**
    * Run an operation on a filed PDF. Every one of these writes a NEW file into
    * the client's AI-drafts folder; none can modify the document it reads.
    */
-  pdfAction: (docId: string | number, action: PdfAction, body: Record<string, unknown>) =>
+  pdfAction: (
+    docId: string | number,
+    action: PdfAction,
+    body: Record<string, unknown>,
+    /**
+     * Whose document the caller believes this is. The backend refuses a
+     * mismatch. Always pass it from the chat agent, where the id comes out of
+     * a sentence and could be wrong or invented.
+     */
+    clientId?: string,
+  ) =>
     json<PdfResult>(`/api/pdf/${encodeURIComponent(String(docId))}/${action}`, {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify(clientId ? { ...body, client_id: clientId } : body),
     }),
   consent: (identifier: string, action = "check") =>
     json<{ allowed: boolean; kind: string; reason: string; state: string }>("/api/consent", { method: "POST", body: JSON.stringify({ identifier, action }) }),

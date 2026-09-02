@@ -1,6 +1,6 @@
-import type { DiskClient } from "./sync-werk-types";
-import type { Client, ClientDocument, ClientStatus } from "./types";
-import { nowIso, slug } from "./utils";
+import type { DiskClient } from "./sync-werk-types.ts";
+import type { Client, ClientDocument, ClientStatus } from "./types.ts";
+import { nowIso, slug } from "./utils.ts";
 
 function uid(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;

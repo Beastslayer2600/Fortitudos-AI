@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
-import type { DocType } from "./types";
-import type { DiskClient, DiskDocument, SyncWerkResult } from "./sync-werk-types";
+import type { DocType } from "./types.ts";
+import type { DiskClient, DiskDocument, SyncWerkResult } from "./sync-werk-types.ts";
 
 const FOLDER_TO_TYPE: Record<string, DocType> = {
   "01_fica": "FICA / Identity",

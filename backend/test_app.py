@@ -1479,5 +1479,93 @@ class ThePdfApiWritesOnlyToTheDraftFolder(unittest.TestCase):
 
 
 
+class ADocumentIdIsNotALicence(unittest.TestCase):
+    """Once a chat message can name a document id, the id alone is not enough.
+
+    The workbench only ever lists the open client's documents, so scoping was
+    implicit. The agent names a document from a sentence, and a wrong or
+    invented id would otherwise reach into another client's file.
+    """
+
+    def setUp(self):
+        import pdf_tools
+        self.tmp = tempfile.TemporaryDirectory()
+        self._dir, self._db = client_store.CLIENTS_DIR, client_store.CLIENT_DB
+        client_store.CLIENTS_DIR = Path(self.tmp.name) / "clients"
+        client_store.CLIENT_DB = Path(self.tmp.name) / "clients.db"
+        self.a = client_store.create_client("Client Alpha")
+        self.b = client_store.create_client("Client Beta")
+        pdf = pdf_tools.make_pdf(["ID number 8001015009087"])
+        client_store.add_document(self.a, "alpha.pdf", pdf, "Signed FNA", "application/pdf")
+        conn = client_store.connect()
+        self.doc_id = str(conn.execute(
+            "SELECT id FROM documents WHERE client_id = ? ORDER BY id DESC", (self.a,)
+        ).fetchone()["id"])
+        conn.close()
+
+    def tearDown(self):
+        client_store.CLIENTS_DIR, client_store.CLIENT_DB = self._dir, self._db
+        self.tmp.cleanup()
+
+    def test_the_owning_client_may_open_it(self):
+        import pdf_api
+        doc, data = pdf_api.load(self.doc_id, self.a)
+        self.assertTrue(data)
+        self.assertEqual(doc["client_id"], self.a)
+
+    def test_another_client_may_not(self):
+        import pdf_api
+        with self.assertRaises(pdf_api.WrongClient):
+            pdf_api.load(self.doc_id, self.b)
+
+    def test_the_refusal_does_not_confirm_the_document_exists(self):
+        """Saying "that belongs to someone else" is itself a leak."""
+        import pdf_api
+        try:
+            pdf_api.load(self.doc_id, self.b)
+        except pdf_api.DocError as exc:
+            self.assertEqual(str(exc), "Document not found.")
+
+    def test_no_scope_still_works_for_the_workbench(self):
+        import pdf_api
+        self.assertTrue(pdf_api.load(self.doc_id)[1])
+
+    def test_a_scoped_post_is_refused_for_the_wrong_client(self):
+        import pdf_api
+        captured = {}
+
+        class Fake:
+            def send_json(self, payload, status=200):
+                captured.update(payload=payload, status=status)
+
+        pdf_api.handle_post(Fake(), ["api", "pdf", self.doc_id, "extract"],
+                            {"client_id": self.b})
+        self.assertEqual(captured["status"], 404)
+
+    def test_a_scoped_post_works_for_the_right_client(self):
+        import pdf_api
+        captured = {}
+
+        class Fake:
+            def send_json(self, payload, status=200):
+                captured.update(payload=payload, status=status)
+
+        pdf_api.handle_post(Fake(), ["api", "pdf", self.doc_id, "extract"],
+                            {"client_id": self.a})
+        self.assertEqual(captured["status"], 200)
+        self.assertTrue(captured["payload"]["ok"])
+
+    def test_the_get_scope_is_read_from_the_query_string(self):
+        """The handler only splits the path, so this has to be parsed, not assumed."""
+        import pdf_api
+
+        class H:
+            path = f"/api/pdf/{self.doc_id}?client_id={self.a}"
+
+        self.assertEqual(pdf_api._client_scope(H()), self.a)
+        self.assertEqual(pdf_api._client_scope(type("N", (), {"path": "/api/pdf/1"})()), "")
+
+
+
 if __name__ == "__main__":
     unittest.main()

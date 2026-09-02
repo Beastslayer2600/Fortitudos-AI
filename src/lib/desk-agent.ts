@@ -7,15 +7,15 @@ import type {
   ClientStatus,
   DocType,
   NoteType,
-} from "./types";
-import { CLIENT_STATUSES, DOC_TYPES, NOTE_TYPES } from "./types";
-import { matchClients } from "./desk-chat";
-import { buildFnaDraft } from "./fna-form";
-import { briefToChatLines, buildOpsBrief } from "./ops-brief";
-import { loadLedger, saveLedger } from "./craft-ledger";
-import type { CraftLead } from "./craft";
-import { slug } from "./utils";
-import { clientFileLanguage } from "./crossover";
+} from "./types.ts";
+import { CLIENT_STATUSES, DOC_TYPES, NOTE_TYPES } from "./types.ts";
+import { matchClients } from "./desk-chat.ts";
+import { buildFnaDraft } from "./fna-form.ts";
+import { briefToChatLines, buildOpsBrief } from "./ops-brief.ts";
+import { loadLedger, saveLedger } from "./craft-ledger.ts";
+import type { CraftLead } from "./craft.ts";
+import { slug } from "./utils.ts";
+import { clientFileLanguage } from "./crossover.ts";
 
 export type DeskAgentAction =
   | { type: "select_client"; clientId?: string; nameQuery?: string }
@@ -69,6 +69,27 @@ export type DeskAgentAction =
       note?: string;
     }
   | {
+      /**
+       * Act on a filed PDF belonging to the ACTIVE client. Every one of these
+       * writes a new draft; none can change the document it reads. `docId` is
+       * resolved against the active client's filed documents, so a wrong or
+       * invented id fails rather than reaching another client's file.
+       */
+      type: "pdf_action";
+      docId?: number | string;
+      /** Match a document by filename when the adviser names it, not an id. */
+      filename?: string;
+      action?: "redact" | "annotate" | "stamp" | "extract" | "assemble" | "fill";
+      /** redact */
+      literals?: string[];
+      patterns?: ("sa_id" | "account" | "tax")[];
+      /** annotate */
+      page?: number;
+      text?: string;
+      /** assemble */
+      select?: string;
+    }
+  | {
       type: "create_invoice";
       who?: string;
       amount?: string;
@@ -98,6 +119,36 @@ export type DeskAgentContext = {
   userMessage: string;
   sessions?: import("./types").DramaSession[];
   dropItems?: import("./types").DropItem[];
+  /**
+   * The active client's filed documents as the vault holds them, with the text
+   * of any PDF that is open. This is what lets the adviser say "redact her ID
+   * number" instead of clicking through the workbench.
+   */
+  vaultDocuments?: VaultDocument[];
+};
+
+export type VaultDocument = {
+  id: number;
+  filename: string;
+  docType: string;
+  clientId: string;
+  /** Per-page text, present only for the document currently open. */
+  pages?: { page: number; text: string }[];
+};
+
+/**
+ * A PDF operation the agent asked for, resolved and scoped but not yet run.
+ *
+ * applyDeskActions stays synchronous and pure — the part worth testing is
+ * which document an instruction resolves to and whose it is, not the HTTP.
+ * The caller executes these.
+ */
+export type PdfRequest = {
+  docId: number;
+  clientId: string;
+  filename: string;
+  action: "redact" | "annotate" | "stamp" | "extract" | "assemble" | "fill";
+  body: Record<string, unknown>;
 };
 
 export type DeskMutators = {
@@ -140,6 +191,7 @@ export function applyDeskActions(
   fnaFactLines: string[];
   fnaMarkdown?: string;
   output?: string;
+  pdfRequests?: PdfRequest[];
 } {
   let activeClientId = ctx.activeClientId;
   let fnaFactLines = [...ctx.fnaFactLines];
@@ -152,6 +204,7 @@ export function applyDeskActions(
   // and Craft lead names into that client's compliance record.
   let fnaMarkdown: string | undefined;
   let output: string | undefined;
+  const pdfRequests: PdfRequest[] = [];
   const say = (block: string) => {
     output = (output ? output + "\n\n" : "") + block;
   };
@@ -365,6 +418,80 @@ export function applyDeskActions(
       continue;
     }
 
+    if (action.type === "pdf_action") {
+      const client = activeClientId;
+      if (!client) {
+        applied.push("pdf_action skipped \u2014 no client is open");
+        continue;
+      }
+      // Only this client's documents are even candidates. The id can come out
+      // of a sentence, so being wrong must fail rather than reach a file.
+      const mine = (ctx.vaultDocuments ?? []).filter((d) => d.clientId === client);
+      let doc: VaultDocument | undefined;
+      if (action.docId !== undefined && action.docId !== null && `${action.docId}` !== "") {
+        doc = mine.find((d) => `${d.id}` === `${action.docId}`);
+      } else if (action.filename) {
+        const want = action.filename.toLowerCase();
+        const hits = mine.filter((d) => d.filename.toLowerCase().includes(want));
+        // An ambiguous name is refused, not guessed: acting on the wrong
+        // document of the right client is still the wrong document.
+        if (hits.length > 1) {
+          applied.push(
+            `pdf_action skipped \u2014 "${action.filename}" matches ${hits.length} documents: ` +
+              hits.map((h) => h.filename).join(", "),
+          );
+          continue;
+        }
+        doc = hits[0];
+      }
+      if (!doc) {
+        applied.push(
+          "pdf_action skipped \u2014 no filed document of this client matched" +
+            (action.filename ? ` "${action.filename}"` : ""),
+        );
+        continue;
+      }
+
+      const kind = action.action ?? "extract";
+      const body: Record<string, unknown> = {};
+      if (kind === "redact") {
+        body.literals = action.literals ?? [];
+        body.patterns = action.patterns ?? [];
+        if (!(body.literals as string[]).length && !(body.patterns as string[]).length) {
+          applied.push("pdf_action skipped \u2014 redact needs text or a pattern");
+          continue;
+        }
+      } else if (kind === "annotate") {
+        if (!action.text?.trim()) {
+          applied.push("pdf_action skipped \u2014 annotate needs note text");
+          continue;
+        }
+        body.notes = [{ page: action.page ?? 1, text: action.text }];
+      } else if (kind === "stamp") {
+        if (!action.text?.trim()) {
+          applied.push("pdf_action skipped \u2014 stamp needs text");
+          continue;
+        }
+        body.text = action.text;
+      } else if (kind === "assemble") {
+        if (!action.select?.trim()) {
+          applied.push("pdf_action skipped \u2014 assemble needs a page selection");
+          continue;
+        }
+        body.select = action.select;
+      }
+
+      pdfRequests.push({
+        docId: doc.id,
+        clientId: client,
+        filename: doc.filename,
+        action: kind,
+        body,
+      });
+      applied.push(`Queued ${kind} on ${doc.filename}`);
+      continue;
+    }
+
     if (action.type === "create_invoice") {
       const who = (action.who || "client").trim();
       const amount = (action.amount || "").trim() || "TBD";
@@ -378,7 +505,7 @@ export function applyDeskActions(
     }
   }
 
-  return { applied, activeClientId, fnaFactLines, fnaMarkdown, output };
+  return { applied, activeClientId, fnaFactLines, fnaMarkdown, output, pdfRequests };
 }
 
 export function parseAgentJson(text: string): {
@@ -444,12 +571,31 @@ export function buildContextBlock(ctx: DeskAgentContext): string {
     ].join("\n");
   }
 
+  // Documents as the vault holds them, which is what pdf_action operates on.
+  // Only this client's are listed: the agent cannot name what it cannot see.
+  const vault = (ctx.vaultDocuments ?? []).filter(
+    (d) => !!active && d.clientId === active.id,
+  );
+  const vaultBlock = vault.length
+    ? vault
+        .map((d) => {
+          const head = `  - id ${d.id} | ${d.filename} | ${d.docType}`;
+          if (!d.pages?.length) return head;
+          // The open document's text, so "redact her ID number" can be acted on.
+          const body = d.pages
+            .map((pg) => `      p${pg.page}: ${pg.text.slice(0, 1400)}`)
+            .join("\n");
+          return `${head}  (OPEN)\n${body}`;
+        })
+        .join("\n")
+    : "  (none filed, or the backend is not running)";
+
   const history = ctx.recentMessages
     .slice(-8)
     .map((m) => `${m.role}: ${m.content.slice(0, 1200)}`)
     .join("\n\n");
 
-  return `CLIENTS ON DESK:\n${list || "(none)"}\n\nACTIVE CLIENT:\n${activeBlock}\n\nRECENT CHAT:\n${history || "(empty)"}\n\nADVISER MESSAGE:\n${ctx.userMessage}`;
+  return `CLIENTS ON DESK:\n${list || "(none)"}\n\nACTIVE CLIENT:\n${activeBlock}\n\nFILED DOCUMENTS (pdf_action works on these):\n${vaultBlock}\n\nRECENT CHAT:\n${history || "(empty)"}\n\nADVISER MESSAGE:\n${ctx.userMessage}`;
 }
 
 export const DESK_AGENT_SYSTEM = `You are the Fortitudo desk agent for a South African financial adviser (FAIS). You reason carefully, then edit the desk records when asked.
@@ -467,6 +613,15 @@ Rules:
 8. docType must be one of: FICA / Identity, RPQ, Signed FNA, Advice Report, Quote, ROA, Correspondence, Other.
 9. reply is for the adviser: clear, structured, calm. No hype. Mention what you changed.
 10. This is internal working material, not advice to the client.
+11. PDF work uses pdf_action on a document listed under FILED DOCUMENTS. Every
+    one writes a NEW draft; the filed original is never changed, so say "saved a
+    redacted copy", never "redacted the document". Name the document by filename
+    if you are unsure of the id, and never invent an id.
+12. You cannot rewrite the words inside a PDF — it is a page format, not a text
+    document. If asked to change wording, use action "extract" to produce an
+    editable markdown draft and say that is what you did.
+13. A scanned PDF has no text: it can be annotated, stamped and reordered, but
+    not read or redacted. Say so rather than trying.
 
 Respond with JSON ONLY (no markdown fence):
 {
@@ -482,6 +637,7 @@ Action schemas:
 { "type": "add_document", "clientId": "optional", "filename": "...", "docType": "...", "text": "optional extract" }
 { "type": "upsert_fna_facts", "clientId": "optional", "meetingDate": "optional", "facts": { "net_salary": "55000", "occupation": "Engineer", ... } }
 { "type": "save_fna_note", "clientId": "optional", "title": "optional" }
+{ "type": "pdf_action", "docId": 12, "filename": "optional instead of docId", "action": "redact|annotate|stamp|extract|assemble", "literals": ["exact text"], "patterns": ["sa_id","account","tax"], "page": 1, "text": "note or stamp text", "select": "1,3-5" }
 { "type": "list_today" }
 { "type": "list_pending" }
 { "type": "schedule_followup", "who": "optional", "whenLabel": "optional", "note": "optional", "line": "fa|craft|drama" }

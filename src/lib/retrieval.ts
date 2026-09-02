@@ -1,5 +1,5 @@
-import { PAGES, type ProductPage } from "./product-docs";
-import type { AskCitation } from "./types";
+import { PAGES, type ProductPage } from "./product-docs.ts";
+import type { AskCitation } from "./types.ts";
 
 const STOP = new Set([
   "the",

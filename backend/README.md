@@ -187,3 +187,27 @@ pinned version on a machine that already fights its Python wheels. The model
 does not read pixels — it reads the per-page text the backend extracts. When
 highlighting a span on the page becomes the thing you want, that is the moment
 to take the dependency.
+
+### Driving it from chat
+
+With a client open, the desk agent can act on their filed PDFs directly:
+
+> "Redact her ID number from the FICA copy"
+> "Stamp the FNA as an internal draft"
+> "Pull the advice report into an editable draft"
+
+The open document's page text goes into the agent's context, so it can answer
+questions about the document as well as act on it.
+
+**A document id is not a licence.** The workbench only ever lists the open
+client's documents, so scoping used to be implicit. The agent names a document
+from a sentence, and a wrong or invented id would otherwise reach another
+client's file — so every call from the chat carries the client, the backend
+refuses a mismatch, and the agent is only shown the active client's documents
+in the first place. Three layers, because the id now comes from a model.
+
+The refusal is worded exactly like "not found": confirming that a document
+exists but belongs to someone else is itself a leak.
+
+An ambiguous filename is refused rather than guessed. Acting on the wrong
+document of the right client is still the wrong document.

@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 import client_store
 import pdf_tools
@@ -28,15 +29,29 @@ class DocError(ValueError):
     """A document that cannot be worked on, with a reason worth showing."""
 
 
-def load(doc_id: str) -> Tuple[dict, bytes]:
+class WrongClient(DocError):
+    """The document belongs to someone else. Never a 'did you mean'."""
+
+
+def load(doc_id: str, for_client: str = "") -> Tuple[dict, bytes]:
     """Fetch a filed document's bytes, refusing anything outside the vault.
 
     The stored path decides what gets read, so it is checked against the vault
     root before any read — a document row is not a licence to open a file.
+
+    `for_client` is the caller saying which client it believes this is. A
+    mismatch is refused. The workbench UI only ever lists the open client's
+    documents, but the chat agent names a document by id from a sentence, and
+    a wrong or invented id would otherwise reach into another client's file.
+    Anything that can name an id must say whose it is.
     """
     doc = client_store.get_document(doc_id)
     if not doc:
         raise DocError("Document not found.")
+    if for_client and str(doc.get("client_id") or "") != str(for_client):
+        # Deliberately the same wording as "not found": confirming that a
+        # document exists but belongs to someone else is itself a leak.
+        raise WrongClient("Document not found.")
     path = Path(doc["relative_path"])
     try:
         path.resolve().relative_to(client_store.CLIENTS_DIR.resolve())
@@ -76,9 +91,9 @@ def _save(doc: dict, data: bytes, suffix: str, ctype="application/pdf") -> dict:
     }
 
 
-def describe(doc_id: str) -> dict:
+def describe(doc_id: str, for_client: str = "") -> dict:
     """Everything the desk needs to show the document and reason about it."""
-    doc, data = load(doc_id)
+    doc, data = load(doc_id, for_client)
     pages = pdf_tools.read_pages(data)
     fields = pdf_tools.form_fields(data)
     scanned = all(p.blank for p in pages)
@@ -113,10 +128,21 @@ def describe(doc_id: str) -> dict:
     }
 
 
+def _client_scope(handler) -> str:
+    """?client_id=... from the request. The handler only splits the path, so
+    the query has to be read here rather than assumed onto it."""
+    try:
+        query = parse_qs(urlparse(handler.path).query)
+    except Exception:
+        return ""
+    values = query.get("client_id") or []
+    return str(values[0]) if values else ""
+
+
 def handle_get(handler, parts) -> bool:
     if len(parts) == 3 and parts[:2] == ["api", "pdf"]:
         try:
-            handler.send_json(describe(parts[2]))
+            handler.send_json(describe(parts[2], _client_scope(handler)))
         except DocError as exc:
             handler.send_json({"error": str(exc)}, 404)
         return True
@@ -128,7 +154,7 @@ def handle_post(handler, parts, body) -> bool:
         return False
     doc_id, action = parts[2], parts[3]
     try:
-        doc, data = load(doc_id)
+        doc, data = load(doc_id, str(body.get("client_id") or ""))
     except DocError as exc:
         handler.send_json({"error": str(exc)}, 404)
         return True

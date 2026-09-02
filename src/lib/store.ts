@@ -1,9 +1,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { DOMAINS } from "./drama-domains";
-import { mergeDiskClients } from "./merge-disk-clients";
-import { project } from "./projections";
-import type { DiskClient } from "./sync-werk-types";
+import { DOMAINS } from "./drama-domains.ts";
+import { mergeDiskClients } from "./merge-disk-clients.ts";
+import { project } from "./projections.ts";
+import type { DiskClient } from "./sync-werk-types.ts";
 import type {
   AskTurn,
   Client,
@@ -20,8 +20,8 @@ import type {
   DropItem,
   NoteType,
   ProjectionInputs,
-} from "./types";
-import { nowIso, slug } from "./utils";
+} from "./types.ts";
+import { nowIso, slug } from "./utils.ts";
 
 type State = {
   hydrated: boolean;

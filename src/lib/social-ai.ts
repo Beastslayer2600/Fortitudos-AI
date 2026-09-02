@@ -1,11 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
-import { claimGuard } from "./craft";
+import { claimGuard } from "./craft.ts";
 import {
   offlineSocialBatch,
   SITE_PAGES,
   VOICE_SYSTEM,
   type SocialBatch,
-} from "./social-voice";
+} from "./social-voice.ts";
 
 async function chat(system: string, user: string, maxTokens: number) {
   const apiKey = process.env.XAI_API_KEY;

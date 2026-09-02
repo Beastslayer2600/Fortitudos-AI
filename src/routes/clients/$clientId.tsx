@@ -634,7 +634,7 @@ function VaultDocuments({ clientId }: { clientId: string }) {
   }, [clientId]);
 
   if (openId !== null) {
-    return <PdfWorkbench docId={openId} onClose={() => setOpenId(null)} />;
+    return <PdfWorkbench docId={openId} clientId={clientId} onClose={() => setOpenId(null)} />;
   }
 
   if (state === "offline") {

@@ -3,8 +3,8 @@
  * Stubs for calendar/invoices; live data from clients, drama, craft ledger.
  */
 import { loadLedger } from "./craft-ledger.ts";
-import type { CraftLead } from "./craft";
-import type { Client, DramaSession, DropItem } from "./types";
+import type { CraftLead } from "./craft.ts";
+import type { Client, DramaSession, DropItem } from "./types.ts";
 
 export type BriefKind =
   | "meeting"
