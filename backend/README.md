@@ -175,9 +175,48 @@ reader will copy it out. `redact` rewrites the content stream so the glyphs are
 gone — the eval asserts the text is absent from the raw bytes, not just from
 what extraction returns.
 
-A scan is refused rather than redacted. There is no text to remove, and a file
-reporting "redacted" while the ID number sits in the image is exactly the
-failure this exists to prevent. OCR it first.
+### Scans
+
+A scan's content is pixels, so the two redactions are genuinely different jobs:
+
+| | how |
+|---|---|
+| Text PDF | rewrite the content stream — `redact()` |
+| Scan | blank the pixels, rebuild the page — `redact_regions()` |
+
+The `redact` action picks the right one. This matters more than it looks: OCR a
+scan, find the ID number, and run a text redaction on the literal, and it
+removes nothing at all while reporting success — there is no such string in the
+file. Worse, OCR misreading a single digit makes a literal-based redaction miss
+silently.
+
+**So OCR never decides what gets removed.** It reads the page and *suggests*
+regions. The removal is pixel-level, which holds whether or not the OCR was
+right, and the result is re-read afterwards to prove the text is gone — a
+redaction that cannot be confirmed is refused rather than returned.
+
+A suggestion is narrowed to the match rather than the whole OCR line. Blanking
+the line would take the client's name out with the ID number. There is no
+per-character geometry, so the span is estimated from character offsets and
+padded wider than the error: clipping a digit is worse than eating a
+neighbouring letter.
+
+Pixel redaction refuses a page that still has real text, rather than quietly
+flattening the text layer into an image.
+
+OCR output is labelled as a guess everywhere it surfaces, and never becomes
+citable evidence. A figure read by OCR was read from a picture of the document,
+not from the document.
+
+**Installing OCR** — deliberately not in `requirements.txt`, because it is a
+large download and the desk works without it:
+
+```bat
+pip install rapidocr-onnxruntime
+```
+
+Without it, a scan can still be annotated, stamped and reordered; the workbench
+says so and gives the install line rather than failing oddly.
 
 ### The viewer
 

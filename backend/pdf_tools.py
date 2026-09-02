@@ -513,3 +513,342 @@ def to_markdown(data: bytes, title: str = "") -> str:
         body.append(page.text if page.text else "_(no text on this page)_")
         body.append("")
     return "\n".join(head + body)
+
+
+# ---------------------------------------------------------------- scans
+#
+# A scan has no text: the content is pixels. That splits redaction in two, and
+# the split matters more than it looks.
+#
+#   redact()          text PDF   — rewrites the content stream
+#   redact_regions()  scan       — blanks the pixels themselves
+#
+# It would be easy to OCR a scan, find "8001015009087", and call redact() on
+# the literal. That would do nothing at all — there is no such string in the
+# file — and would report success. Worse, OCR misreading one digit means a
+# literal-based redaction silently misses while the page still says redacted.
+#
+# So OCR here never decides what gets removed. It reads, and it *suggests*
+# regions. The removal is pixel-level, which is true whether or not the OCR
+# was right, and redact_regions re-reads the result to prove the text is gone.
+
+
+class OcrUnavailable(RuntimeError):
+    """No OCR engine installed. Said plainly rather than returning empty text."""
+
+
+def ocr_available() -> Tuple[bool, str]:
+    """(usable, why). Lets the desk offer or explain, instead of failing oddly."""
+    try:
+        import pypdfium2  # noqa: F401
+    except Exception:
+        return False, ("Page rendering needs pypdfium2. Install it with: "
+                       "pip install pypdfium2")
+    try:
+        from rapidocr_onnxruntime import RapidOCR  # noqa: F401
+    except Exception:
+        return False, ("OCR needs an engine. Install it with: "
+                       "pip install rapidocr-onnxruntime")
+    return True, "ready"
+
+
+def render_page(data: bytes, page: int = 1, scale: float = 2.0):
+    """One page as a PIL image. Used for OCR and for pixel redaction."""
+    import io as _io
+    import pypdfium2
+    doc = pypdfium2.PdfDocument(_io.BytesIO(data))
+    index = min(max(int(page), 1), len(doc)) - 1
+    return doc[index].render(scale=scale).to_pil().convert("RGB")
+
+
+@dataclass
+class OcrLine:
+    text: str
+    confidence: float
+    # (left, top, right, bottom) in the rendered image's pixels.
+    box: Tuple[float, float, float, float]
+
+
+@dataclass
+class OcrPage:
+    number: int
+    lines: List[OcrLine] = field(default_factory=list)
+    width: int = 0
+    height: int = 0
+
+    @property
+    def text(self) -> str:
+        return "\n".join(line.text for line in self.lines)
+
+    @property
+    def worst(self) -> float:
+        return min((line.confidence for line in self.lines), default=0.0)
+
+
+# Below this, a line is a guess. OCR output is never evidence, but a low score
+# is worth showing the adviser rather than burying.
+OCR_SHAKY = 0.80
+
+
+def ocr_pages(data: bytes, pages: Sequence[int] = (), scale: float = 2.0) -> List[OcrPage]:
+    """Read a scan. Best effort, and labelled as such wherever it surfaces.
+
+    This is for finding and reading, not for quoting. A figure read by OCR has
+    not been read from the document — it has been guessed from a picture of it,
+    and the desk's whole point is not doing that quietly.
+    """
+    ok, why = ocr_available()
+    if not ok:
+        raise OcrUnavailable(why)
+    import numpy as np
+    from rapidocr_onnxruntime import RapidOCR
+
+    engine = RapidOCR()
+    total = page_count(data)
+    wanted = [p for p in (pages or range(1, total + 1)) if 1 <= p <= total]
+    out: List[OcrPage] = []
+    for number in wanted:
+        image = render_page(data, number, scale)
+        result, _elapsed = engine(np.array(image))
+        lines: List[OcrLine] = []
+        for entry in result or []:
+            box, text, score = entry[0], str(entry[1]), float(entry[2])
+            xs = [float(p[0]) for p in box]
+            ys = [float(p[1]) for p in box]
+            lines.append(OcrLine(text, score, (min(xs), min(ys), max(xs), max(ys))))
+        out.append(OcrPage(number, lines, image.width, image.height))
+    return out
+
+
+@dataclass
+class Region:
+    """A rectangle on a rendered page, in that render's pixel coordinates."""
+    page: int
+    box: Tuple[float, float, float, float]
+    scale: float = 2.0
+    label: str = ""
+
+
+def _narrow_box(box: Tuple[float, float, float, float], line: str,
+                match: str, pad_frac: float = 0.04
+                ) -> Tuple[float, float, float, float]:
+    """Shrink a line box to roughly the part holding `match`.
+
+    OCR gives one box per line, so blanking the box removes the whole line —
+    ask to remove an ID number and the client's name goes with it, which makes
+    the feature useless in practice.
+
+    There is no per-character geometry available, so this estimates the span
+    from the character offsets and pads it generously. An estimate that is
+    slightly too wide is fine; the padding is deliberately larger than the
+    error, because a redaction that clips a digit is worse than one that eats
+    a neighbouring letter.
+    """
+    if not line or not match or match not in line:
+        return box
+    left, top, right, bottom = box
+    width = right - left
+    start = line.index(match) / len(line)
+    end = (line.index(match) + len(match)) / len(line)
+    pad = width * pad_frac
+    return (left + width * start - pad, top, left + width * end + pad, bottom)
+
+
+def suggest_redactions(data: bytes, *, patterns: Sequence[str] = (),
+                       literals: Sequence[str] = (), scale: float = 2.0
+                       ) -> List[Region]:
+    """Where the sensitive text appears to be. A suggestion, never an action.
+
+    Returned so a person can see and confirm what will be blanked. OCR being
+    wrong about a digit does not matter here: the box still covers the number,
+    and the pixels inside it are what gets removed.
+    """
+    chosen = [BUILTIN_PATTERNS[p] for p in patterns if p in BUILTIN_PATTERNS]
+    wanted = [str(t).strip() for t in literals if str(t).strip()]
+    found: List[Region] = []
+    for page in ocr_pages(data, scale=scale):
+        for line in page.lines:
+            hits: List[str] = []
+            for pattern in chosen:
+                hits.extend(m.group(0) for m in pattern.finditer(line.text))
+            for want in wanted:
+                index = line.text.lower().find(want.lower())
+                if index >= 0:
+                    hits.append(line.text[index:index + len(want)])
+            for hit in hits:
+                # One region per match, narrowed to the match — not the line.
+                found.append(Region(
+                    page.number, _narrow_box(line.box, line.text, hit), scale, hit))
+    return found
+
+
+def _jpeg_page_pdf(image, width_pt: float, height_pt: float) -> bytes:
+    """A one-page PDF containing this image at the given page size."""
+    import io as _io
+    buf = _io.BytesIO()
+    image.convert("RGB").save(buf, format="JPEG", quality=88)
+    jpeg = buf.getvalue()
+    w, h = image.size
+
+    objects: List[bytes] = []
+
+    def add(body: bytes) -> int:
+        objects.append(body)
+        return len(objects)
+
+    img_id = add(
+        b"<< /Type /XObject /Subtype /Image /Width %d /Height %d "
+        b"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode "
+        b"/Length %d >>\nstream\n" % (w, h, len(jpeg)) + jpeg + b"\nendstream"
+    )
+    stream = (b"q %s 0 0 %s 0 0 cm /Im0 Do Q"
+              % (_num(width_pt), _num(height_pt)))
+    content_id = add(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
+    pages_id = add(b"")
+    page_id = add(
+        b"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 %s %s] "
+        b"/Resources << /XObject << /Im0 %d 0 R >> >> /Contents %d 0 R >>"
+        % (pages_id, _num(width_pt), _num(height_pt), img_id, content_id)
+    )
+    objects[pages_id - 1] = b"<< /Type /Pages /Kids [%d 0 R] /Count 1 >>" % page_id
+    catalog_id = add(b"<< /Type /Catalog /Pages %d 0 R >>" % pages_id)
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += b"xref\n0 %d\n" % (len(objects) + 1) + b"0000000000 65535 f \n"
+    for off in offsets[1:]:
+        out += b"%010d 00000 n \n" % off
+    out += (b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+            % (len(objects) + 1, catalog_id, xref_at))
+    return bytes(out)
+
+
+def redact_regions(data: bytes, regions: Sequence[Region], *,
+                   verify: bool = True, pad: float = 3.0
+                   ) -> Tuple[bytes, List[str]]:
+    """Blank these areas of a scan permanently. Returns (bytes, notes).
+
+    The page is rendered, the boxes are painted out, and the page is rebuilt
+    from that raster. The removed content is not covered — it is not in the
+    file. This is why it does not matter whether OCR read the digits correctly:
+    the pixels inside the box are gone either way.
+
+    The cost is real and worth stating: a rebuilt page is an image. On a scan
+    that changes nothing, because the page was already an image. On a text PDF
+    it would throw away the text layer, so use redact() there instead — this
+    refuses a page that still has text rather than quietly flattening it.
+
+    `verify` re-reads the result and refuses to return a document where the
+    text is still legible. A redaction that only looks done is the failure this
+    whole path exists to avoid.
+    """
+    import pypdfium2
+    from PIL import ImageDraw
+    from pypdf import PdfReader, PdfWriter
+
+    if not regions:
+        return data, ["no regions given, nothing removed"]
+
+    pages_with_text = {p.number for p in read_pages(data) if not p.blank}
+    targeted = {int(r.page) for r in regions}
+    clash = sorted(targeted & pages_with_text)
+    if clash:
+        raise NotRedactable(
+            f"Page(s) {clash} still contain real text. Rebuilding them as "
+            "images would throw the text layer away. Use text redaction on "
+            "those pages instead."
+        )
+
+    reader = PdfReader(io.BytesIO(data))
+    writer = PdfWriter()
+    notes: List[str] = []
+
+    by_page: Dict[int, List[Region]] = {}
+    for region in regions:
+        by_page.setdefault(int(region.page), []).append(region)
+
+    for number, page in enumerate(reader.pages, start=1):
+        if number not in by_page:
+            writer.add_page(page)
+            continue
+        here = by_page[number]
+        scale = float(here[0].scale or 2.0)
+        image = render_page(data, number, scale)
+        draw = ImageDraw.Draw(image)
+        for region in here:
+            left, top, right, bottom = region.box
+            draw.rectangle(
+                [left - pad, top - pad, right + pad, bottom + pad], fill="black")
+            notes.append(f"page {number}: blanked {region.label or 'region'}")
+        box = page.mediabox
+        rebuilt = _jpeg_page_pdf(image, float(box.width), float(box.height))
+        writer.add_page(PdfReader(io.BytesIO(rebuilt)).pages[0])
+
+    buf = io.BytesIO()
+    writer.write(buf)
+    out = buf.getvalue()
+
+    if verify:
+        leftovers = _still_legible(out, regions)
+        if leftovers:
+            raise NotRedactable(
+                "The text is still readable after blanking: "
+                + ", ".join(sorted(set(leftovers))[:5])
+                + ". Nothing was saved — widen the region and try again."
+            )
+        notes.append("verified: the blanked text is no longer readable")
+    return out, notes
+
+
+def _still_legible(data: bytes, regions: Sequence[Region]) -> List[str]:
+    """Re-read the redacted pages and report any target text that survived.
+
+    Trusting the draw call would be the same mistake as trusting a black
+    rectangle. This checks the result rather than the intention.
+    """
+    wanted = [r.label.strip() for r in regions if r.label.strip()]
+    if not wanted:
+        return []
+    try:
+        pages = ocr_pages(data, sorted({int(r.page) for r in regions}))
+    except OcrUnavailable:
+        return []
+    seen = " ".join(p.text for p in pages).lower()
+    survivors = []
+    for label in wanted:
+        # A label is a whole OCR line; the sensitive part is the digits in it.
+        for token in re.findall(r"\d{6,}", label):
+            if token.lower() in seen:
+                survivors.append(token)
+    return survivors
+
+
+def ocr_markdown(pages: Sequence[OcrPage], title: str = "") -> str:
+    """OCR output as a working draft, labelled as a guess on every page.
+
+    The banner is not politeness. A figure here was read from a picture, and
+    the desk's whole discipline is not letting that pass as something read
+    from the document.
+    """
+    head = [
+        f"# {title or 'Document'} (OCR)",
+        "",
+        "> Read by OCR from a scan. Every figure is a guess at a picture of the",
+        "> page, not a value read from the document. Check each one against the",
+        "> scan before it goes anywhere near advice. The PDF is unchanged.",
+        "",
+    ]
+    body: List[str] = []
+    for page in pages:
+        body.append(f"## Page {page.number}")
+        if page.lines and page.worst < OCR_SHAKY:
+            body.append("")
+            body.append(f"_Lowest confidence on this page: {page.worst:.0%}._")
+        body.append("")
+        body.append(page.text if page.lines else "_(nothing legible on this page)_")
+        body.append("")
+    return "\n".join(head + body)

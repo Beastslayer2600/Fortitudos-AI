@@ -1641,5 +1641,146 @@ class OneClientsFileNeverReachesAnothersAnswer(unittest.TestCase):
 
 
 
+def _ocr_ready():
+    import pdf_tools
+    return pdf_tools.ocr_available()[0]
+
+
+def _make_scan(text):
+    """A real scan: rendered to pixels, with no text layer at all."""
+    import pdf_tools
+    src = pdf_tools.make_pdf([text])
+    return pdf_tools._jpeg_page_pdf(pdf_tools.render_page(src, 1, 2.0), 595, 842)
+
+
+class AScanIsPixelsNotText(unittest.TestCase):
+    """Redacting a scan by rewriting text would do nothing and report success."""
+
+    def test_a_rebuilt_image_page_has_no_text_layer(self):
+        import pdf_tools
+        if not _ocr_ready():
+            self.skipTest("no OCR engine installed")
+        self.assertTrue(pdf_tools.is_scanned(_make_scan("ID number 8001015009087")))
+
+    def test_text_redaction_is_refused_on_a_scan(self):
+        """The old path would have silently matched nothing and 'succeeded'."""
+        import pdf_tools
+        if not _ocr_ready():
+            self.skipTest("no OCR engine installed")
+        with self.assertRaises(pdf_tools.NotRedactable):
+            pdf_tools.redact(_make_scan("ID number 8001015009087"), patterns=["sa_id"])
+
+    def test_pixel_redaction_refuses_a_page_that_still_has_text(self):
+        """Rebuilding a text page as an image would throw the text layer away."""
+        import pdf_tools
+        src = pdf_tools.make_pdf(["Real text on a real text page"])
+        region = pdf_tools.Region(page=1, box=(0, 0, 100, 100))
+        with self.assertRaises(pdf_tools.NotRedactable) as caught:
+            pdf_tools.redact_regions(src, [region])
+        self.assertIn("text layer", str(caught.exception))
+
+
+class OcrReadsButNeverDecides(unittest.TestCase):
+    """OCR finds where the number is. Pixels are what actually get removed."""
+
+    def setUp(self):
+        if not _ocr_ready():
+            self.skipTest("no OCR engine installed")
+        self.scan = _make_scan("ID number 8001015009087 and name Botha")
+
+    def test_it_reads_a_scan(self):
+        import pdf_tools
+        text = " ".join(p.text for p in pdf_tools.ocr_pages(self.scan))
+        self.assertIn("8001015009087", text)
+
+    def test_a_suggestion_is_one_region_per_match_not_the_whole_line(self):
+        """Blanking the line would take the client's name with the ID number."""
+        import pdf_tools
+        regions = pdf_tools.suggest_redactions(self.scan, patterns=["sa_id"])
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(regions[0].label, "8001015009087")
+
+    def test_the_number_is_gone_and_the_name_survives(self):
+        import pdf_tools
+        regions = pdf_tools.suggest_redactions(self.scan, patterns=["sa_id"])
+        out, _notes = pdf_tools.redact_regions(self.scan, regions)
+        after = " ".join(p.text for p in pdf_tools.ocr_pages(out))
+        self.assertNotIn("8001015009087", after)
+        self.assertIn("Botha", after)
+
+    def test_the_result_is_re_read_to_prove_it(self):
+        import pdf_tools
+        regions = pdf_tools.suggest_redactions(self.scan, patterns=["sa_id"])
+        _out, notes = pdf_tools.redact_regions(self.scan, regions)
+        self.assertTrue(any("verified" in n for n in notes), notes)
+
+    def test_a_redaction_that_did_not_work_is_refused_not_returned(self):
+        """A zero-size box removes nothing; returning it would be the lie."""
+        import pdf_tools
+        regions = pdf_tools.suggest_redactions(self.scan, patterns=["sa_id"])
+        useless = [pdf_tools.Region(r.page, (0, 0, 0, 0), r.scale, r.label)
+                   for r in regions]
+        with self.assertRaises(pdf_tools.NotRedactable) as caught:
+            pdf_tools.redact_regions(self.scan, useless, pad=0)
+        self.assertIn("still readable", str(caught.exception))
+
+    def test_ocr_output_is_labelled_as_a_guess(self):
+        import pdf_tools
+        md = pdf_tools.ocr_markdown(pdf_tools.ocr_pages(self.scan), "FICA copy")
+        self.assertIn("OCR", md)
+        self.assertIn("guess at a picture", md)
+        self.assertIn("Check each one", md)
+
+
+class TheNarrowBoxKeepsWhatItShould(unittest.TestCase):
+    """Pure geometry — runs with or without an OCR engine."""
+
+    def test_it_covers_the_match_and_not_the_whole_line(self):
+        from pdf_tools import _narrow_box
+        line = "ID number 8001015009087 and name Botha"
+        box = (0.0, 0.0, 380.0, 20.0)
+        narrow = _narrow_box(box, line, "8001015009087")
+        self.assertGreater(narrow[0], box[0])
+        self.assertLess(narrow[2], box[2])
+
+    def test_it_pads_wider_than_the_estimate(self):
+        """Clipping a digit is worse than eating a neighbouring letter."""
+        from pdf_tools import _narrow_box
+        line = "abc 123456 def"
+        exact_start = 380.0 * (line.index("123456") / len(line))
+        narrow = _narrow_box((0.0, 0.0, 380.0, 20.0), line, "123456")
+        self.assertLess(narrow[0], exact_start)
+
+    def test_an_absent_match_leaves_the_box_alone(self):
+        from pdf_tools import _narrow_box
+        box = (1.0, 2.0, 3.0, 4.0)
+        self.assertEqual(_narrow_box(box, "abc", "zzz"), box)
+
+
+class MissingOcrSaysSoRatherThanReturningNothing(unittest.TestCase):
+    def test_the_reason_names_the_install_command(self):
+        import pdf_tools
+        real = pdf_tools.ocr_available
+        pdf_tools.ocr_available = lambda: (False, "OCR needs an engine. Install it with: pip install rapidocr-onnxruntime")
+        try:
+            with self.assertRaises(pdf_tools.OcrUnavailable) as caught:
+                pdf_tools.ocr_pages(b"%PDF-1.4")
+            self.assertIn("pip install", str(caught.exception))
+        finally:
+            pdf_tools.ocr_available = real
+
+    def test_describe_reports_whether_ocr_is_available(self):
+        import inspect, pdf_api
+        src = inspect.getsource(pdf_api.describe)
+        self.assertIn("ocr_available", src)
+        self.assertIn('"ocr"', src)
+
+    def test_a_scan_offers_redaction_only_when_ocr_is_present(self):
+        import inspect, pdf_api
+        src = inspect.getsource(pdf_api.describe)
+        self.assertIn("(not scanned) or ocr_ok", src)
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -141,6 +141,13 @@ export function PdfWorkbench({ docId, clientId, onClose }: Props) {
           {doc.why}
         </p>
       )}
+      {doc.scanned && !doc.ocr.available && (
+        <p className="rounded-lg bg-surface px-4 py-3 text-sm shadow-[var(--shadow-border)]">
+          <strong>To read or redact scans</strong>, install an OCR engine on the
+          desk machine: <code>pip install rapidocr-onnxruntime</code>. It is not
+          installed by default because it is a large download.
+        </p>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
         {/* The document itself. */}
@@ -235,8 +242,10 @@ export function PdfWorkbench({ docId, clientId, onClose }: Props) {
             {tab === "redact" && (
               <div className="space-y-3">
                 <p className="text-xs text-muted">
-                  Removes the text from the new file&apos;s content — not a black box
-                  drawn over it. The original still contains it.
+                  {doc.scanned
+                    ? "This is a scan, so the pixels are blanked and the page is rebuilt as an image. OCR finds where the text is; the removal does not depend on it having read the digits correctly, and the result is re-read to confirm."
+                    : "Removes the text from the new file's content — not a black box drawn over it."}{" "}
+                  The original still contains it.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {(["sa_id", "account", "tax"] as const).map((p) => (
@@ -313,9 +322,9 @@ export function PdfWorkbench({ docId, clientId, onClose }: Props) {
             {tab === "extract" && (
               <div className="space-y-3">
                 <p className="text-xs text-muted">
-                  Writes the text into a markdown draft you can edit. The PDF stays
-                  the untouched original — this is the honest version of editing
-                  the words, because PDF prose cannot be rewritten in place.
+                  {doc.scanned
+                    ? "There is no text in this scan, so it is read by OCR — a guess at a picture of the page. Check every figure against the scan before using it."
+                    : "Writes the text into a markdown draft you can edit. The PDF stays the untouched original — this is the honest version of editing the words, because PDF prose cannot be rewritten in place."}
                 </p>
                 <Button disabled={busy === "extract"} onClick={() => run("extract", {})}>
                   {busy === "extract" ? "Extracting…" : "Save working draft"}
@@ -342,6 +351,15 @@ export function PdfWorkbench({ docId, clientId, onClose }: Props) {
                       {r.removed && r.removed.length > 0 && (
                         <p className="mt-1 text-xs text-muted">
                           Removed: {r.removed.join(", ")}
+                        </p>
+                      )}
+                      {r.ocr && (
+                        <p className="mt-1 text-xs text-danger">
+                          Read by OCR
+                          {typeof r.lowest_confidence === "number"
+                            ? ` (lowest confidence ${Math.round(r.lowest_confidence * 100)}%)`
+                            : ""}
+                          . Check every figure against the scan.
                         </p>
                       )}
                       {r.warning && <p className="mt-1 text-xs text-danger">{r.warning}</p>}

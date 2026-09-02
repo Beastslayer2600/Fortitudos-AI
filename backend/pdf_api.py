@@ -97,6 +97,7 @@ def describe(doc_id: str, for_client: str = "") -> dict:
     pages = pdf_tools.read_pages(data)
     fields = pdf_tools.form_fields(data)
     scanned = all(p.blank for p in pages)
+    ocr_ok, ocr_why = pdf_tools.ocr_available()
     return {
         "id": doc_id,
         "filename": doc.get("filename", ""),
@@ -110,19 +111,26 @@ def describe(doc_id: str, for_client: str = "") -> dict:
              "options": f.options, "required": f.required}
             for f in fields
         ],
+        "ocr": {"available": ocr_ok, "why": ocr_why},
         "can": {
             # Say up front what this particular document supports, rather than
-            # offering an action that will fail on it.
+            # offering an action that will fail on it. A scan can be read and
+            # redacted too, but only once an OCR engine is installed.
             "fill": bool(fields),
-            "redact": not scanned,
+            "redact": (not scanned) or ocr_ok,
             "annotate": True,
             "assemble": True,
             "stamp": True,
-            "extract": not scanned,
+            "extract": (not scanned) or ocr_ok,
         },
         "why": (
-            "No extractable text — this is a scan. It can be annotated, "
-            "stamped and reordered, but not read or redacted until it is OCRed."
+            ("No text in this file — it is a scan. It will be read by OCR, "
+             "which is a guess at a picture, so check every figure. Redaction "
+             "blanks the pixels and rebuilds the page as an image."
+             if ocr_ok else
+             "No text in this file — it is a scan, and no OCR engine is "
+             "installed, so it can only be annotated, stamped and reordered. "
+             + ocr_why)
             if scanned else ""
         ),
     }
@@ -189,10 +197,42 @@ def handle_post(handler, parts, body) -> bool:
             return True
 
         if action == "redact":
+            literals = [str(x) for x in (body.get("literals") or [])]
+            patterns = [str(x) for x in (body.get("patterns") or [])]
+            if pdf_tools.is_scanned(data):
+                # A scan's content is pixels, so removing text from a content
+                # stream would do nothing and report success. Blank the pixels
+                # instead — and say so, because the result is a flattened image.
+                ok, why = pdf_tools.ocr_available()
+                if not ok:
+                    handler.send_json({"error": (
+                        "This is a scan, so redaction has to remove pixels, "
+                        "which needs OCR to find them. " + why), "scanned": True}, 400)
+                    return True
+                regions = pdf_tools.suggest_redactions(
+                    data, patterns=patterns, literals=literals)
+                if not regions:
+                    handler.send_json({
+                        "ok": False, "removed": [], "scanned": True,
+                        "error": "OCR found nothing matching on this scan. "
+                                 "Check the exact text, or the scan may be too "
+                                 "poor to read.",
+                    }, 400)
+                    return True
+                out, notes = pdf_tools.redact_regions(data, regions)
+                result = _save(doc, out, "redacted")
+                result["removed"] = sorted({r.label for r in regions})
+                result["scanned"] = True
+                result["notes"] = notes
+                result["note"] += (
+                    " This was a scan, so the pixels were blanked and the page "
+                    "rebuilt as an image. The removal was re-read to confirm it. "
+                    "The ORIGINAL still contains everything."
+                )
+                handler.send_json(result)
+                return True
             out, removed = pdf_tools.redact(
-                data,
-                literals=[str(x) for x in (body.get("literals") or [])],
-                patterns=[str(x) for x in (body.get("patterns") or [])],
+                data, literals=literals, patterns=patterns,
             )
             if not removed:
                 handler.send_json({
@@ -239,6 +279,26 @@ def handle_post(handler, parts, body) -> bool:
             return True
 
         if action == "extract":
+            if pdf_tools.is_scanned(data):
+                ok, why = pdf_tools.ocr_available()
+                if not ok:
+                    handler.send_json({"error": (
+                        "This is a scan with no text to extract. " + why),
+                        "scanned": True}, 400)
+                    return True
+                pages = pdf_tools.ocr_pages(data)
+                md = pdf_tools.ocr_markdown(pages, doc.get("filename", ""))
+                result = _save(doc, md.encode("utf-8"), "ocr draft", "text/markdown")
+                result["scanned"] = True
+                result["ocr"] = True
+                result["lowest_confidence"] = round(
+                    min((p.worst for p in pages if p.lines), default=0.0), 2)
+                result["note"] += (
+                    " Read by OCR from a picture of the page, not from the "
+                    "document. Check every figure against the scan before using it."
+                )
+                handler.send_json(result)
+                return True
             md = pdf_tools.to_markdown(data, doc.get("filename", ""))
             handler.send_json(_save(doc, md.encode("utf-8"), "draft", "text/markdown"))
             return True

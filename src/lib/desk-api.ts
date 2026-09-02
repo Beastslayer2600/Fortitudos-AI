@@ -79,6 +79,8 @@ export type PdfDescription = {
   pages: { page: number; text: string }[];
   fields: PdfField[];
   can: Record<PdfAction, boolean>;
+  /** Whether an OCR engine is installed, and what to run if not. */
+  ocr: { available: boolean; why: string };
   why: string;
 };
 
@@ -92,9 +94,13 @@ export type PdfResult = {
   original_untouched?: string;
   note?: string;
   removed?: string[];
+  notes?: string[];
+  /** True when the result came from a scan: pixels blanked, page rebuilt. */
+  scanned?: boolean;
+  ocr?: boolean;
+  lowest_confidence?: number;
   unknown_fields?: string[];
   warning?: string;
-  scanned?: boolean;
 };
 
 export const deskApi = {
