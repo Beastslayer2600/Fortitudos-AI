@@ -134,6 +134,66 @@ def score_depth(verbose=False) -> Score:
     return s
 
 
+def score_backup(verbose=False) -> Score:
+    """The properties that separate a backup from a hope."""
+    import sqlite3, tempfile
+    from pathlib import Path as P
+    import vault_backup as vb
+
+    s = Score("backup")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = P(tmp)
+        vault, arch = root / "vault", root / "archive"
+        (vault / "clients" / "botha").mkdir(parents=True)
+        (vault / "clients" / "botha" / "fna.pdf").write_bytes(b"%PDF signed")
+        conn = sqlite3.connect(vault / "clients.db")
+        conn.execute("CREATE TABLE c (id TEXT)")
+        conn.execute("INSERT INTO c VALUES ('botha')")
+        conn.commit()                      # left open, as the desk leaves it
+
+        first = vb.back_up(vault, arch).id
+        s.check(vb.verify(arch).ok, "a fresh backup did not verify")
+
+        out = root / "restored"
+        vb.restore(arch, out)
+        s.check((out / "clients" / "botha" / "fna.pdf").read_bytes() == b"%PDF signed",
+                "a restored file did not match")
+        rdb = sqlite3.connect(out / "clients.db")
+        s.check(rdb.execute("SELECT id FROM c").fetchall() == [("botha",)],
+                "a live database did not survive the round trip")
+        rdb.close()
+        conn.close()
+
+        # Immutability: a deletion must not reach the archive.
+        (vault / "clients" / "botha" / "fna.pdf").unlink()
+        vb.back_up(vault, arch)
+        old_dir = root / "old"
+        vb.restore(arch, old_dir, snapshot_id=first)
+        s.check((old_dir / "clients" / "botha" / "fna.pdf").exists(),
+                "a deleted file was not recoverable from an older snapshot")
+
+        # Same-second runs must not overwrite each other.
+        ids = {vb.back_up(vault, arch).id for _ in range(3)}
+        s.check(len(ids) == 3, "backups in the same second collided")
+        s.check(vb.snapshots(arch)[-1].id == max(ids, key=vb._order_key),
+                "the newest snapshot did not sort last")
+
+        # Corruption must be caught rather than restored.
+        obj = next(p for p in (arch / "objects").rglob("*") if p.is_file())
+        obj.write_bytes(b"rot")
+        # Archive-wide: the rotted object is held only by an older snapshot,
+        # which is precisely the case verifying the newest one misses.
+        s.check(not vb.verify_archive(arch).ok, "corruption was not detected")
+        try:
+            vb.restore(arch, root / "bad", snapshot_id=first)
+            s.check(False, "a corrupt object was restored")
+        except vb.BackupError:
+            s.check(True, "")
+        if verbose:
+            print(f"  snapshots: {[x.id for x in vb.snapshots(arch)]}")
+    return s
+
+
 def score_client_scope(verbose=False) -> Score:
     """No answer for one client may be built from another client's file."""
     import numpy as np
@@ -243,6 +303,7 @@ def main() -> int:
         score_depth(args.verbose),
         score_pdf(args.verbose),
         score_client_scope(args.verbose),
+        score_backup(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))

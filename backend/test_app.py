@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -1779,6 +1780,180 @@ class MissingOcrSaysSoRatherThanReturningNothing(unittest.TestCase):
         import inspect, pdf_api
         src = inspect.getsource(pdf_api.describe)
         self.assertIn("(not scanned) or ocr_ok", src)
+
+
+
+class TheBackupCanActuallyBeRestored(unittest.TestCase):
+    """A backup nobody has restored is a hypothesis, so the tests restore."""
+
+    def setUp(self):
+        import vault_backup
+        self.vb = vault_backup
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.vault = self.root / "vault"
+        self.arch = self.root / "archive"
+        (self.vault / "clients" / "botha" / "02_FNA").mkdir(parents=True)
+        (self.vault / "clients" / "botha" / "02_FNA" / "fna.pdf").write_bytes(
+            b"%PDF-1.4 signed fna")
+        (self.vault / "clients" / "botha" / "01_FICA").mkdir(parents=True)
+        (self.vault / "clients" / "botha" / "01_FICA" / "id.jpg").write_bytes(b"\xff\xd8jpeg")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def live_db(self):
+        """An open database, the way it is when the desk is running."""
+        conn = sqlite3.connect(self.vault / "clients.db")
+        conn.execute("CREATE TABLE clients (id TEXT, name TEXT)")
+        conn.execute("INSERT INTO clients VALUES ('botha','Mrs Botha')")
+        conn.commit()
+        return conn
+
+    def test_a_restore_returns_the_same_bytes(self):
+        self.vb.back_up(self.vault, self.arch)
+        out = self.root / "restored"
+        self.vb.restore(self.arch, out)
+        self.assertEqual(
+            (out / "clients" / "botha" / "02_FNA" / "fna.pdf").read_bytes(),
+            b"%PDF-1.4 signed fna")
+
+    def test_a_live_database_is_copied_consistently_and_opens(self):
+        """Copying an open .db off disk can yield a file that will not open."""
+        conn = self.live_db()
+        try:
+            self.vb.back_up(self.vault, self.arch)
+        finally:
+            conn.close()
+        out = self.root / "restored"
+        self.vb.restore(self.arch, out)
+        restored = sqlite3.connect(out / "clients.db")
+        try:
+            self.assertEqual(
+                restored.execute("SELECT name FROM clients").fetchall(),
+                [("Mrs Botha",)])
+        finally:
+            restored.close()
+
+    def test_the_second_run_stores_only_what_changed(self):
+        """Content addressing is what makes this cheap enough to actually run."""
+        self.vb.back_up(self.vault, self.arch)
+        (self.vault / "clients" / "botha" / "new.txt").write_text("new")
+        snap = self.vb.back_up(self.vault, self.arch)
+        self.assertTrue(any("1 newly stored" in n for n in snap.notes), snap.notes)
+
+    def test_a_deleted_file_survives_in_an_older_snapshot(self):
+        """A mirror would faithfully destroy the only other copy."""
+        first = self.vb.back_up(self.vault, self.arch).id
+        (self.vault / "clients" / "botha" / "02_FNA" / "fna.pdf").unlink()
+        self.vb.back_up(self.vault, self.arch)
+        out = self.root / "old"
+        self.vb.restore(self.arch, out, snapshot_id=first)
+        self.assertTrue((out / "clients" / "botha" / "02_FNA" / "fna.pdf").exists())
+
+    def test_two_backups_in_one_second_are_two_snapshots(self):
+        """They used to share a filename, and the second silently replaced it."""
+        ids = {self.vb.back_up(self.vault, self.arch).id for _ in range(3)}
+        self.assertEqual(len(ids), 3)
+        self.assertEqual(len(self.vb.snapshots(self.arch)), 3)
+
+    def test_the_newest_snapshot_is_actually_the_newest(self):
+        """Sorted as strings, "Z-2" lands before "Z" — the newest read as oldest."""
+        (self.vault / "v.txt").write_text("one")
+        self.vb.back_up(self.vault, self.arch)
+        (self.vault / "v.txt").write_text("two")
+        self.vb.back_up(self.vault, self.arch)
+        (self.vault / "v.txt").write_text("three")
+        last = self.vb.back_up(self.vault, self.arch).id
+        self.assertEqual(self.vb.snapshots(self.arch)[-1].id, last)
+        out = self.root / "newest"
+        self.vb.restore(self.arch, out)          # no id given = newest
+        self.assertEqual((out / "v.txt").read_text(), "three")
+
+    def test_verify_catches_a_corrupted_object(self):
+        """A size-and-date check says everything is fine until it matters."""
+        self.vb.back_up(self.vault, self.arch)
+        obj = next(p for p in (self.arch / "objects").rglob("*") if p.is_file())
+        obj.write_bytes(b"rot")
+        verdict = self.vb.verify(self.arch)
+        self.assertFalse(verdict.ok)
+        self.assertTrue(verdict.corrupt)
+
+    def test_restore_refuses_a_corrupted_object_rather_than_writing_it(self):
+        self.vb.back_up(self.vault, self.arch)
+        obj = next(p for p in (self.arch / "objects").rglob("*") if p.is_file())
+        obj.write_bytes(b"rot")
+        with self.assertRaises(self.vb.BackupError) as caught:
+            self.vb.restore(self.arch, self.root / "bad")
+        self.assertIn("corrupt", str(caught.exception))
+
+    def test_verifying_the_newest_snapshot_is_not_verifying_the_archive(self):
+        """An object kept only by an older snapshot can rot unnoticed.
+
+        That older copy is the whole reason snapshots exist, so the archive
+        check has to reach it.
+        """
+        first = self.vb.back_up(self.vault, self.arch).id
+        (self.vault / "clients" / "botha" / "02_FNA" / "fna.pdf").unlink()
+        (self.vault / "clients" / "botha" / "01_FICA" / "id.jpg").unlink()
+        self.vb.back_up(self.vault, self.arch)
+
+        old_only = {e.digest for e in self.vb.load_snapshot(self.arch, first).entries}
+        newest = {e.digest for e in self.vb.load_snapshot(self.arch).entries}
+        target = sorted(old_only - newest)[0]
+        self.vb._object_path(self.arch, target).write_bytes(b"rot")
+
+        self.assertTrue(self.vb.verify(self.arch).ok,
+                        "the newest snapshot should not see this")
+        self.assertFalse(self.vb.verify_archive(self.arch).ok,
+                         "the archive check missed a rotted object")
+
+    def test_verify_reports_a_missing_object(self):
+        self.vb.back_up(self.vault, self.arch)
+        next(p for p in (self.arch / "objects").rglob("*") if p.is_file()).unlink()
+        self.assertTrue(self.vb.verify(self.arch).missing)
+
+    def test_an_archive_inside_the_vault_is_refused(self):
+        """It dies with the vault, and each run would back up the last one."""
+        with self.assertRaises(self.vb.BackupError) as caught:
+            self.vb.back_up(self.vault, self.vault / "backups")
+        self.assertIn("outside the vault", str(caught.exception))
+
+    def test_restore_refuses_a_directory_that_is_not_empty(self):
+        """A mistyped restore during an emergency must not eat the live vault."""
+        self.vb.back_up(self.vault, self.arch)
+        busy = self.root / "busy"
+        busy.mkdir()
+        (busy / "something.txt").write_text("do not lose me")
+        with self.assertRaises(self.vb.BackupError):
+            self.vb.restore(self.arch, busy)
+        self.assertEqual((busy / "something.txt").read_text(), "do not lose me")
+
+    def test_journal_files_are_not_backed_up(self):
+        """A journal restored beside an already-consistent db is inconsistent."""
+        (self.vault / "clients.db-wal").write_bytes(b"journal")
+        snap = self.vb.back_up(self.vault, self.arch)
+        self.assertNotIn("clients.db-wal", [e.path for e in snap.entries])
+
+    def test_prune_keeps_the_newest_and_leaves_them_restorable(self):
+        for i in range(5):
+            (self.vault / "v.txt").write_text(f"v{i}")
+            self.vb.back_up(self.vault, self.arch)
+        self.vb.prune(self.arch, keep=2)
+        left = self.vb.snapshots(self.arch)
+        self.assertEqual(len(left), 2)
+        self.assertTrue(self.vb.verify(self.arch, left[0].id).ok)
+        self.assertTrue(self.vb.verify(self.arch, left[-1].id).ok)
+
+    def test_the_archive_explains_itself_and_warns_about_the_contents(self):
+        """Whoever finds this drive needs to know what is on it."""
+        self.vb.back_up(self.vault, self.arch)
+        raw = (self.arch / "README.md").read_text(encoding="utf-8")
+        # The warning matters; where it line-wraps does not.
+        readme = re.sub(r"\s+", " ", raw)
+        self.assertIn("client personal information in the clear", readme)
+        self.assertIn("encrypted volume", readme)
+        self.assertIn("--restore", readme)
 
 
 

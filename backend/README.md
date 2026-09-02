@@ -275,3 +275,55 @@ more, not less, since it returns raw page text straight to the adviser.
 `ask._keep_source` is the second layer, and the eval tests the guard through
 `search()` rather than the filter alone — a guard that exists but is not wired
 in is exactly the failure this suite is for.
+
+## Backing up the vault
+
+The vault is one folder on one machine and FAIS wants records kept five years.
+A dead laptop currently costs the practice everything.
+
+```bat
+"Backup Vault.bat" E:\FortitudoBackup
+```
+
+or directly:
+
+```bat
+python backend\vault_backup.py --to E:\FortitudoBackup
+python backend\vault_backup.py --verify E:\FortitudoBackup
+python backend\vault_backup.py --list E:\FortitudoBackup
+python backend\vault_backup.py --restore E:\FortitudoBackup --into C:\vaultcheck
+python backend\vault_backup.py --prune E:\FortitudoBackup --keep 12
+```
+
+A backup run verifies itself and exits non-zero if it does not check out, so a
+scheduled task fails loudly rather than writing rubbish for months.
+
+### Four decisions, each aimed at a way backups fail
+
+**Snapshots, not a mirror.** A mirror propagates a deletion or a corruption —
+delete a client file by accident and the next sync destroys the only other
+copy. Snapshots are immutable, so an older one still has the file.
+
+**Content-addressed.** Every unique file is stored once under the SHA-256 of
+its own contents, so repeat runs copy only what changed, and because an
+object's name IS its checksum, silent corruption is detectable.
+
+**The database goes through SQLite, not off the disk.** Copying a live `.db`
+mid-write gives a plausible file that will not open — months later, when it is
+the only copy left. `-wal`, `-shm` and `-journal` files are skipped for the
+same reason.
+
+**Verify and restore are first-class.** `--verify` re-hashes every object any
+snapshot references, not just the newest one — an object kept only by an older
+snapshot is the copy of a file since deleted from the vault, which is exactly
+what snapshots are for, and exactly what a newest-only check would let rot. `restore` refuses a non-empty directory, so a mistyped
+command during an emergency cannot eat the vault it is recovering, and it
+re-hashes as it writes rather than producing a subtly wrong vault.
+
+### Not encrypted, deliberately
+
+Key management done badly loses an archive more reliably than having no backup
+at all. The correct answer is a destination the operating system already
+encrypts — BitLocker, FileVault, LUKS. **The archive holds client data in the
+clear: treat the destination exactly as you treat the vault.** The archive's own
+README says so, for whoever finds the drive.
