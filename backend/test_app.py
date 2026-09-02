@@ -1219,5 +1219,265 @@ class TheEvalHarnessIsRealAndRuns(unittest.TestCase):
 
 
 
+class PdfOperationsNeverTouchTheOriginal(unittest.TestCase):
+    """The compliance guarantee, tested rather than trusted.
+
+    A filed client document is the signed record. Every operation here reads
+    bytes and returns bytes, so the code has no way to write over what it
+    opened — these tests exist to keep it that way.
+    """
+
+    def setUp(self):
+        import pdf_tools
+        self.pdf_tools = pdf_tools
+        self.src = pdf_tools.make_pdf([
+            "Mrs A Botha - Financial Needs Analysis",
+            "ID number 8001015009087. Account 1234567890.",
+            "Waiting period 3 months. Level A pays 100%.",
+        ])
+
+    def test_no_operation_returns_the_bytes_it_was_given(self):
+        t = self.pdf_tools
+        before = bytes(self.src)
+        outputs = [
+            t.annotate(self.src, [t.Note(page=1, text="check this")]),
+            t.stamp(self.src, "INTERNAL DRAFT"),
+            t.select_pages(self.src, "1"),
+            t.rotate_pages(self.src, "1", 90),
+            t.redact(self.src, patterns=["sa_id"])[0],
+        ]
+        self.assertEqual(self.src, before, "the source bytes were mutated in place")
+        for out in outputs:
+            self.assertNotEqual(out, before, "an operation returned the original unchanged")
+
+    def test_the_module_cannot_write_to_a_path_at_all(self):
+        """Structural, not a convention. pdf_tools never touches the filesystem.
+
+        Reading bytes in and handing bytes back is what makes overwriting a
+        signed record impossible rather than merely discouraged.
+        """
+        import inspect, pdf_tools, re
+        src = inspect.getsource(pdf_tools)
+        for banned in ["write_bytes(", "write_text(", "shutil.", "os.remove",
+                       "os.rename", "os.replace", "Path("]:
+            self.assertNotIn(banned, src, f"pdf_tools uses {banned}")
+        # The only open() allowed is pdfplumber reading an in-memory buffer.
+        for call in re.findall(r"[\w.]*\bopen\s*\(", src):
+            self.assertEqual(call, "pdfplumber.open(", f"unexpected open: {call}")
+
+
+class RedactionRemovesRatherThanCovers(unittest.TestCase):
+    """A black box over a number leaves the number in the file."""
+
+    def setUp(self):
+        import pdf_tools
+        self.t = pdf_tools
+        self.src = pdf_tools.make_pdf([
+            "Client Mrs Botha", "ID number 8001015009087 and account 1234567890"])
+
+    def text_of(self, data):
+        return " ".join(p.text for p in self.t.read_pages(data))
+
+    def test_an_id_number_is_gone_from_the_extracted_text(self):
+        out, removed = self.t.redact(self.src, patterns=["sa_id"])
+        self.assertIn("8001015009087", removed)
+        self.assertNotIn("8001015009087", self.text_of(out))
+
+    def test_it_is_gone_from_the_raw_bytes_too(self):
+        """The real test. Extraction can miss what a text search still finds."""
+        out, _ = self.t.redact(self.src, patterns=["sa_id"])
+        self.assertNotIn(b"8001015009087", out)
+
+    def test_the_rest_of_the_document_survives(self):
+        out, _ = self.t.redact(self.src, patterns=["sa_id"])
+        self.assertIn("Botha", self.text_of(out))
+
+    def test_a_literal_string_can_be_removed(self):
+        out, removed = self.t.redact(self.src, literals=["Mrs Botha"])
+        self.assertIn("Mrs Botha", removed)
+        self.assertNotIn(b"Mrs Botha", out)
+
+    def test_a_scan_is_refused_rather_than_pretend_redacted(self):
+        """No text to remove: reporting success would be the worst outcome."""
+        blank = self.t.make_pdf([""])
+        with self.assertRaises(self.t.NotRedactable) as caught:
+            self.t.redact(blank, patterns=["sa_id"])
+        self.assertIn("OCR", str(caught.exception))
+
+    def test_nothing_matched_removes_nothing(self):
+        out, removed = self.t.redact(self.src, literals=["not in this document"])
+        self.assertEqual(removed, [])
+
+
+class FormFillingSaysWhatItCouldNotDo(unittest.TestCase):
+    def test_unknown_field_names_are_reported_not_dropped(self):
+        """A form silently missing your field looks like a filled form."""
+        import pdf_tools
+        src = pdf_tools.make_pdf(["A page with no form fields"])
+        _out, missing = pdf_tools.fill_form(src, {"full_name": "A Botha"})
+        self.assertEqual(missing, ["full_name"])
+
+    def test_a_document_with_no_fields_reports_none(self):
+        import pdf_tools
+        self.assertEqual(pdf_tools.form_fields(pdf_tools.make_pdf(["plain"])), [])
+
+
+class PageSelectionRefusesWhatItCannotHonour(unittest.TestCase):
+    def setUp(self):
+        import pdf_tools
+        self.t = pdf_tools
+        self.src = pdf_tools.make_pdf(["one", "two", "three", "four"])
+
+    def test_a_range_is_expanded(self):
+        self.assertEqual(self.t.page_count(self.t.select_pages(self.src, "1,3-4")), 3)
+
+    def test_an_out_of_range_page_is_dropped_not_clamped(self):
+        """Clamping would put a page nobody asked for into a client pack."""
+        self.assertEqual(self.t.page_count(self.t.select_pages(self.src, "2,99")), 1)
+
+    def test_selecting_nothing_is_an_error_not_an_empty_pdf(self):
+        with self.assertRaises(ValueError):
+            self.t.select_pages(self.src, "99")
+
+    def test_duplicates_are_not_repeated(self):
+        self.assertEqual(self.t.page_count(self.t.select_pages(self.src, "2,2,2")), 1)
+
+
+class StampingLeavesTheContentReadable(unittest.TestCase):
+    def test_the_banner_is_added_and_the_page_survives(self):
+        import pdf_tools
+        src = pdf_tools.make_pdf(["Original body text"])
+        out = pdf_tools.stamp(src, "INTERNAL DRAFT - adviser review required")
+        text = " ".join(p.text for p in pdf_tools.read_pages(out))
+        self.assertIn("INTERNAL DRAFT", text)
+        self.assertIn("Original body text", text)
+
+
+class ExtractionIsTheHonestVersionOfEditing(unittest.TestCase):
+    def test_a_text_pdf_becomes_a_working_draft(self):
+        import pdf_tools
+        src = pdf_tools.make_pdf(["Waiting period is 3 months."])
+        md = pdf_tools.to_markdown(src, "Botha FNA")
+        self.assertIn("# Botha FNA", md)
+        self.assertIn("3 months", md)
+        self.assertIn("unchanged", md)
+
+    def test_a_scan_says_it_needs_ocr_rather_than_returning_nothing(self):
+        import pdf_tools
+        md = pdf_tools.to_markdown(pdf_tools.make_pdf([""]), "Scan")
+        self.assertIn("OCR", md)
+
+
+class ThePdfApiWritesOnlyToTheDraftFolder(unittest.TestCase):
+    """End to end against a real vault: read a filed PDF, write a new draft."""
+
+    def setUp(self):
+        import pdf_tools
+        self.tmp = tempfile.TemporaryDirectory()
+        self._dir, self._db = client_store.CLIENTS_DIR, client_store.CLIENT_DB
+        client_store.CLIENTS_DIR = Path(self.tmp.name) / "clients"
+        client_store.CLIENT_DB = Path(self.tmp.name) / "clients.db"
+        self.cid = client_store.create_client("Pdf Client")
+        self.original = pdf_tools.make_pdf([
+            "Signed FNA", "ID number 8001015009087"])
+        self.path = client_store.add_document(
+            self.cid, "signed_fna.pdf", self.original, "Signed FNA", "application/pdf")
+        conn = client_store.connect()
+        row = conn.execute(
+            "SELECT id FROM documents WHERE client_id = ? ORDER BY id DESC", (self.cid,)
+        ).fetchone()
+        conn.close()
+        self.doc_id = str(row["id"])
+
+    def tearDown(self):
+        client_store.CLIENTS_DIR, client_store.CLIENT_DB = self._dir, self._db
+        self.tmp.cleanup()
+
+    def sent(self, action, body):
+        import pdf_api
+        captured = {}
+
+        class Fake:
+            def send_json(self, payload, status=200):
+                captured.update(payload=payload, status=status)
+
+        handled = pdf_api.handle_post(Fake(), ["api", "pdf", self.doc_id, action], body)
+        self.assertTrue(handled, action)
+        return captured
+
+    def test_describe_reports_what_this_document_supports(self):
+        import pdf_api
+        info = pdf_api.describe(self.doc_id)
+        self.assertEqual(info["page_count"], 2)
+        self.assertFalse(info["scanned"])
+        self.assertTrue(info["can"]["redact"])
+        self.assertFalse(info["can"]["fill"], "no form fields, so fill is not offered")
+
+    def test_a_redaction_writes_a_new_file_and_leaves_the_original(self):
+        out = self.sent("redact", {"patterns": ["sa_id"]})["payload"]
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["folder"], client_store.AI_DRAFT_FOLDER)
+        self.assertEqual(out["doc_type"], client_store.AI_DRAFT_TYPE)
+        self.assertIn("8001015009087", out["removed"])
+        # The signed record is byte-identical to what was filed.
+        self.assertEqual(Path(self.path).read_bytes(), self.original)
+        self.assertIn(b"8001015009087", Path(self.path).read_bytes())
+        # The new file is a real, different, redacted document.
+        self.assertNotIn(b"8001015009087", Path(out["path"]).read_bytes())
+
+    def test_the_draft_lands_under_the_drafts_folder_on_disk(self):
+        out = self.sent("stamp", {"text": "INTERNAL DRAFT"})["payload"]
+        self.assertIn(client_store.AI_DRAFT_FOLDER, out["path"])
+
+    def test_every_action_keeps_the_original_byte_identical(self):
+        for action, body in [
+            ("stamp", {"text": "REVIEW"}),
+            ("annotate", {"notes": [{"page": 1, "text": "confirm this"}]}),
+            ("assemble", {"select": "1"}),
+            ("extract", {}),
+            ("redact", {"patterns": ["sa_id"]}),
+        ]:
+            self.sent(action, body)
+            self.assertEqual(Path(self.path).read_bytes(), self.original, action)
+
+    def test_a_redaction_that_matches_nothing_writes_no_file(self):
+        before = len(list(Path(self.path).parent.parent.rglob("*.pdf")))
+        result = self.sent("redact", {"literals": ["nothing like this"]})
+        self.assertEqual(result["status"], 400)
+        after = len(list(Path(self.path).parent.parent.rglob("*.pdf")))
+        self.assertEqual(before, after, "a file was written for a no-op redaction")
+
+    def test_a_missing_document_is_a_404_not_a_crash(self):
+        import pdf_api
+        with self.assertRaises(pdf_api.DocError):
+            pdf_api.load("999999")
+
+    def test_a_document_outside_the_vault_is_refused(self):
+        import pdf_api
+        real = client_store.get_document
+        client_store.get_document = lambda _id: {
+            "id": 1, "client_id": self.cid, "filename": "passwd",
+            "relative_path": "/etc/passwd", "doc_type": "Other",
+        }
+        try:
+            with self.assertRaises(pdf_api.DocError):
+                pdf_api.load("1")
+        finally:
+            client_store.get_document = real
+
+    def test_a_non_pdf_is_refused_with_a_reason(self):
+        import pdf_api
+        client_store.add_document(self.cid, "notes.txt", b"hello", "Other", "text/plain")
+        conn = client_store.connect()
+        row = conn.execute(
+            "SELECT id FROM documents WHERE client_id = ? ORDER BY id DESC", (self.cid,)
+        ).fetchone()
+        conn.close()
+        with self.assertRaises(pdf_api.DocError) as caught:
+            pdf_api.load(str(row["id"]))
+        self.assertIn("not a PDF", str(caught.exception))
+
+
+
 if __name__ == "__main__":
     unittest.main()

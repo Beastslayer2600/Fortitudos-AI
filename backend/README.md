@@ -132,3 +132,58 @@ Embeddings in the harness are a deterministic hash, not bge-m3, so the score
 depends on the desk rather than on which models happen to be installed.
 
 Add a case in `backend/eval/cases.py`. One line, and a regression names itself.
+
+## PDF workbench
+
+Open a filed client PDF from the client's Documents tab: the document on the
+left, what may be done to it on the right.
+
+```
+GET  /api/pdf/<doc_id>            pages, text, form fields, what this file supports
+POST /api/pdf/<doc_id>/fill       fill AcroForm fields
+POST /api/pdf/<doc_id>/annotate   add comments
+POST /api/pdf/<doc_id>/redact     genuinely remove text
+POST /api/pdf/<doc_id>/assemble   select / rotate pages
+POST /api/pdf/<doc_id>/stamp      overlay a banner or reference
+POST /api/pdf/<doc_id>/extract    write an editable markdown draft
+```
+
+### The original is never edited
+
+A filed client document is the signed record. Changing it in place is not
+editing, it is altering evidence — and append-only versioning *is* the
+compliance trail, not a restriction on it.
+
+So every operation writes a **new** file into `99_AI_Drafts`, typed as an AI
+draft, and the document it read stays byte-identical. This is structural, not a
+setting: `pdf_tools` takes bytes and returns bytes and never touches the
+filesystem, so there is no code path that can overwrite an original. Tests
+assert both halves, and each was verified by deliberately breaking it.
+
+### What is deliberately not offered
+
+Rewriting body prose inside a PDF. PDF is a page-description format, not a
+document with editable text, and a scan has no text at all. Anything claiming
+to do it is reflowing a guess, which on a client file is silent corruption.
+`extract` is the honest version: the text comes out into markdown you can edit,
+the PDF stays the original, and both sit in the client folder.
+
+### Redaction removes, it does not cover
+
+A black rectangle drawn over an ID number leaves the number in the file and any
+reader will copy it out. `redact` rewrites the content stream so the glyphs are
+gone — the eval asserts the text is absent from the raw bytes, not just from
+what extraction returns.
+
+A scan is refused rather than redacted. There is no text to remove, and a file
+reporting "redacted" while the ID number sits in the image is exactly the
+failure this exists to prevent. OCR it first.
+
+### The viewer
+
+The browser's own PDF renderer in an iframe, not pdf.js. pdf.js would give
+per-page coordinates for highlighting, at the cost of a worker bundle and a
+pinned version on a machine that already fights its Python wheels. The model
+does not read pixels — it reads the per-page text the backend extracts. When
+highlighting a span on the page becomes the thing you want, that is the moment
+to take the dependency.

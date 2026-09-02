@@ -134,6 +134,43 @@ def score_depth(verbose=False) -> Score:
     return s
 
 
+def score_pdf(verbose=False) -> Score:
+    """A redaction that only looks done is the failure worth catching."""
+    import pdf_tools
+    s = Score("pdf")
+    for text, patterns, gone, kept in cases.REDACTION:
+        src = pdf_tools.make_pdf([text])
+        out, removed = pdf_tools.redact(src, patterns=patterns)
+        body = " ".join(p.text for p in pdf_tools.read_pages(out))
+        s.check(gone not in body, f"{gone} survived extraction")
+        # The stronger check: gone from the file, not merely from the render.
+        s.check(gone.encode() not in out, f"{gone} still in the raw bytes")
+        s.check(kept in body, f"{kept} was destroyed by the redaction")
+        s.check(bool(removed), f"{patterns} reported nothing removed")
+        if verbose:
+            print(f"  redact {patterns} -> removed {removed}")
+
+    four = pdf_tools.make_pdf(["a", "b", "c", "d"])
+    for spec, expected in cases.PAGE_SPECS:
+        got = pdf_tools.page_count(pdf_tools.select_pages(four, spec))
+        s.check(got == expected, f"select {spec!r} -> {got} pages, expected {expected}")
+        if verbose:
+            print(f"  select {spec!r} -> {got}")
+
+    # A scan cannot be redacted, and saying so is the whole point.
+    try:
+        pdf_tools.redact(pdf_tools.make_pdf([""]), patterns=["sa_id"])
+        s.check(False, "a scan was redacted instead of refused")
+    except pdf_tools.NotRedactable:
+        s.check(True, "")
+
+    # Stamping must not destroy what it marks.
+    stamped = pdf_tools.stamp(pdf_tools.make_pdf(["Original body"]), "DRAFT")
+    body = " ".join(p.text for p in pdf_tools.read_pages(stamped))
+    s.check("DRAFT" in body and "Original body" in body, "stamp lost the page content")
+    return s
+
+
 def score_live(conn, verbose=False) -> Score:
     """Ask the real model. Only meaningful with Ollama running."""
     from ask import answer
@@ -167,6 +204,7 @@ def main() -> int:
         score_gate(args.verbose),
         score_versioning(args.verbose),
         score_depth(args.verbose),
+        score_pdf(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))

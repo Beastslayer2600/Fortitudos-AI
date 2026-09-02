@@ -92,3 +92,16 @@ VERSION_CONFLICT = [
 # Which rooms take the slower reasoning path. Advisor and RoA earn it.
 DEEP_ROOMS = [("fa", True), ("roa", True), ("craft", False),
               ("voice", False), ("drama", False), ("learn", False)]
+
+
+# What must never survive a redaction, and what must. A redaction that eats the
+# whole document is as useless as one that removes nothing.
+REDACTION = [
+    # (page text, patterns, must be gone, must remain)
+    ("Mrs Botha ID number 8001015009087", ["sa_id"], "8001015009087", "Botha"),
+    ("Account 1234567890 for the premium", ["account"], "1234567890", "premium"),
+    ("Tax 0123456789 on file", ["tax"], "0123456789", "file"),
+]
+
+# Page specs and how many pages they should yield from a 4-page document.
+PAGE_SPECS = [("1", 1), ("1,3", 2), ("2-4", 3), ("1,1,1", 1), ("2,99", 1), ("3-1", 3)]

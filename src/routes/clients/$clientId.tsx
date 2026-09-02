@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -28,6 +28,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { formatBytes, formatDate } from "@/lib/utils";
+import { deskApi } from "@/lib/desk-api";
+import { PdfWorkbench } from "@/components/pdf-workbench";
 
 export const Route = createFileRoute("/clients/$clientId")({
   component: ClientPage,
@@ -170,6 +172,7 @@ function ClientPage() {
         </TabsContent>
 
         <TabsContent value="documents" className="mt-6">
+          <VaultDocuments clientId={client.id} />
           <FileForm clientId={client.id} />
           <ul className="mt-6 space-y-2">
             {documents.map((d) => (
@@ -598,6 +601,73 @@ function DraftPanel({
           Follow-up list
         </Button>
       </div>
+    </div>
+  );
+}
+
+
+/**
+ * Documents as the vault holds them on disk, which is a different set from the
+ * ones added in the browser. A PDF here can be opened in the workbench: the
+ * document on one side, what may be done to it on the other.
+ */
+function VaultDocuments({ clientId }: { clientId: string }) {
+  const [docs, setDocs] = useState<
+    { id: number; filename: string; doc_type: string }[]
+  >([]);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [state, setState] = useState<"idle" | "loading" | "offline">("loading");
+
+  useEffect(() => {
+    let live = true;
+    deskApi
+      .vaultClient(clientId)
+      .then((c) => {
+        if (!live) return;
+        setDocs(c.documents ?? []);
+        setState("idle");
+      })
+      .catch(() => live && setState("offline"));
+    return () => {
+      live = false;
+    };
+  }, [clientId]);
+
+  if (openId !== null) {
+    return <PdfWorkbench docId={openId} onClose={() => setOpenId(null)} />;
+  }
+
+  if (state === "offline") {
+    return (
+      <p className="mb-6 rounded-lg bg-surface px-4 py-3 text-sm text-muted shadow-[var(--shadow-border)]">
+        The desk backend is not running, so filed documents cannot be opened.
+        Start it with &ldquo;Start Backend Only.bat&rdquo;.
+      </p>
+    );
+  }
+
+  const pdfs = docs.filter((d) => d.filename.toLowerCase().endsWith(".pdf"));
+  if (state === "loading" || pdfs.length === 0) return null;
+
+  return (
+    <div className="mb-6">
+      <h3 className="text-sm font-semibold">Filed documents</h3>
+      <ul className="mt-2 space-y-2">
+        {pdfs.map((d) => (
+          <li
+            key={d.id}
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface px-4 py-3 shadow-[var(--shadow-border)]"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm">{d.filename}</p>
+              <Badge>{d.doc_type}</Badge>
+            </div>
+            <Button variant="outline" onClick={() => setOpenId(d.id)}>
+              Open
+            </Button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
