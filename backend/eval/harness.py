@@ -76,7 +76,10 @@ def build_index() -> sqlite3.Connection:
         conn.executescript(stmt)
 
     for path in sorted(CORPUS.glob("*.txt")):
-        source = f"guide:{path.stem}"
+        # Client fixtures are indexed the way ingest names them, so scoping is
+        # exercised against the real prefix rather than a stand-in.
+        source = (f"client:{path.stem[len('client_'):]}:fna.pdf"
+                  if path.stem.startswith("client_") else f"guide:{path.stem}")
         for page, body in parse_pages(path.read_text(encoding="utf-8")):
             store.add_page(conn, source, page, body, fake_embed(body)[0])
     conn.commit()

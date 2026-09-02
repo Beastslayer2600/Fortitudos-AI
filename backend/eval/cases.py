@@ -105,3 +105,22 @@ REDACTION = [
 
 # Page specs and how many pages they should yield from a 4-page document.
 PAGE_SPECS = [("1", 1), ("1,3", 2), ("2-4", 3), ("1,1,1", 1), ("2,99", 1), ("3-1", 3)]
+
+
+# Which sources an answer for a given client may be built from. The dangerous
+# case is not an irrelevant page — it is another client's page, cited correctly.
+CLIENT_SCOPE = [
+    # (scope, source, may it be retrieved)
+    (None, "guide:lifestyle_protector", True),
+    (None, "client:botha:fna.pdf", False),
+    ("botha", "guide:lifestyle_protector", True),
+    ("botha", "client:botha:fna.pdf", True),
+    ("botha", "client:naidoo:fna.pdf", False),
+    ("botha", "client:botha_estate:will.pdf", False),
+    ("bot", "client:botha:fna.pdf", False),
+    ("naidoo", "client:botha:fna.pdf", False),
+]
+
+# Which rooms may quote a client file at all.
+CLIENT_ROOMS = [("roa", True), ("fa", False), ("craft", False),
+                ("voice", False), ("drama", False), ("learn", False)]

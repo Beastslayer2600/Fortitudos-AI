@@ -1567,5 +1567,79 @@ class ADocumentIdIsNotALicence(unittest.TestCase):
 
 
 
+class OneClientsFileNeverReachesAnothersAnswer(unittest.TestCase):
+    """The leak this closes: an RoA for one client citing another's file.
+
+    Client documents are indexed beside the product guides. The roa room used
+    to fall through to "keep everything", so retrieval could surface Mr
+    Naidoo's FNA while drafting Mrs Botha's Record of Advice — and span_check
+    would pass it, because the figure really is in the retrieved context. It
+    would read as a properly cited fact.
+    """
+
+    def rows(self):
+        return [
+            (1, "guide:lifestyle_protector", 12, "Level A pays 100%.", 0),
+            (2, "client:botha:fna.pdf", 1, "Botha net salary R55 000.", 0),
+            (3, "client:naidoo:fna.pdf", 1, "Naidoo net salary R92 000.", 0),
+        ]
+
+    def scope(self, client_scope):
+        import numpy as np
+        from retrieval import _scope_clients
+        rows = self.rows()
+        kept, _ = _scope_clients(rows, np.eye(len(rows), dtype="float32"), client_scope)
+        return [r[1] for r in kept]
+
+    def test_no_client_attached_means_no_client_pages(self):
+        self.assertEqual(self.scope(None), ["guide:lifestyle_protector"])
+
+    def test_a_client_sees_only_their_own_pages(self):
+        self.assertEqual(
+            self.scope("botha"), ["guide:lifestyle_protector", "client:botha:fna.pdf"])
+
+    def test_the_other_client_is_not_reachable(self):
+        self.assertNotIn("client:naidoo:fna.pdf", self.scope("botha"))
+
+    def test_a_prefix_of_another_client_id_does_not_match(self):
+        """`client:bot:` must not open `client:botha:` — the colon is the fence."""
+        import numpy as np
+        from retrieval import _scope_clients
+        rows = [(1, "client:botha:fna.pdf", 1, "x", 0)]
+        kept, _ = _scope_clients(rows, np.eye(1, dtype="float32"), "bot")
+        self.assertEqual(kept, [])
+
+    def test_the_guard_lives_before_ranking(self):
+        """Filtering after scoring would still let a page take a top-k slot."""
+        import inspect, retrieval
+        src = inspect.getsource(retrieval.search)
+        self.assertLess(src.index("_scope_clients"), src.index("dense_scores"))
+
+    def test_the_default_is_the_safe_one(self):
+        """A caller that forgets scoping must leak nothing, not everything."""
+        import inspect, retrieval
+        params = inspect.signature(retrieval.search).parameters
+        self.assertIsNone(params["client_scope"].default)
+
+    def test_the_roa_room_no_longer_keeps_every_client_source(self):
+        from ask import _keep_source
+        self.assertTrue(_keep_source("roa", "client:botha:fna.pdf"))
+        self.assertFalse(_keep_source("fa", "client:botha:fna.pdf"))
+        for room in ("craft", "voice", "drama", "learn"):
+            self.assertFalse(_keep_source(room, "client:botha:fna.pdf"), room)
+
+    def test_both_ask_and_show_only_pass_a_scope(self):
+        """show_only returns raw page text, so it needs this more, not less."""
+        import inspect, app, ask
+        self.assertIn("client_scope=", inspect.getsource(app.Handler))
+        self.assertIn("client_id=client_id", inspect.getsource(app.Handler))
+        self.assertIn("client_scope=scope", inspect.getsource(ask.answer))
+
+    def test_answer_defaults_to_no_client(self):
+        import inspect, ask
+        self.assertEqual(inspect.signature(ask.answer).parameters["client_id"].default, "")
+
+
+
 if __name__ == "__main__":
     unittest.main()

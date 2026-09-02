@@ -31,6 +31,12 @@ def _keep_source(room: str, source: str) -> bool:
     shelf.
     """
     src = str(source or "")
+    # Cross-client scoping is enforced in retrieval.search(client_scope=...),
+    # before ranking. This is the second layer: the roa room used to fall
+    # through to `return True` here, which let a Record of Advice for one
+    # client cite a page out of another client's file.
+    if src.startswith("client:"):
+        return room in ("roa",)
     if room == "fa":
         return not src.startswith(("learn:craft", "learn:voice", "learn:drama", "client:"))
     if room == "craft":
@@ -42,7 +48,7 @@ def _keep_source(room: str, source: str) -> bool:
     return True
 
 
-def answer(conn, question, history=None, client_excerpt="", room=""):
+def answer(conn, question, history=None, client_excerpt="", room="", client_id=""):
     """Answer in one room, under that room's corpus rules.
 
     An empty `room` is classified from the question; a caller that has already
@@ -61,8 +67,13 @@ def answer(conn, question, history=None, client_excerpt="", room=""):
     if spec.allow_product_index:
         lookup = rewrite_query(question, history)
         drop = corpus_exclusions(room)
-        results = (search(conn, lookup, as_of=as_of, exclude_prefixes=drop)
-                   or search(conn, question, as_of=as_of, exclude_prefixes=drop))
+        # The client this answer is FOR. Without it every client page is
+        # dropped, so a caller that forgets cannot cite someone else's file.
+        scope = client_id if (client_id and spec.include_clients) else None
+        results = (search(conn, lookup, as_of=as_of, exclude_prefixes=drop,
+                          client_scope=scope)
+                   or search(conn, question, as_of=as_of, exclude_prefixes=drop,
+                             client_scope=scope))
         results = [(row, score) for row, score in results if _keep_source(room, row[1])]
     if not results and not client_excerpt:
         if not spec.allow_product_index:

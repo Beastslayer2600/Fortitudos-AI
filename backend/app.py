@@ -429,8 +429,12 @@ class Handler(BaseHTTPRequestHandler):
                     excerpt = ""
 
                 if body.get("show_only"):
+                    # show_only returns raw page text, so it needs the same
+                    # client scoping as an answer — more so, since nothing
+                    # downstream reads it before the adviser does.
                     results = search(conn, question, as_of=versioning.parse_as_of(question),
-                                     exclude_prefixes=corpus_exclusions(room))
+                                     exclude_prefixes=corpus_exclusions(room),
+                                     client_scope=(client_id if (client_id and spec.include_clients) else None))
                     return self.send_json({"show_only": True, "room": room, "pages": [
                         {"source": r[0][1], "page": r[0][2], "score": round(r[1], 3),
                          "snippet": r[0][3][:1500]} for r in results
@@ -444,6 +448,7 @@ class Handler(BaseHTTPRequestHandler):
                 history = body.get("history") if isinstance(body.get("history"), list) else []
                 text, results = ask_mod.answer(
                     conn, question, history=history, client_excerpt=excerpt, room=room,
+                    client_id=client_id,
                 )
                 return self.send_json({
                     "answer": text,

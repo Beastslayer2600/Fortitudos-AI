@@ -134,6 +134,43 @@ def score_depth(verbose=False) -> Score:
     return s
 
 
+def score_client_scope(verbose=False) -> Score:
+    """No answer for one client may be built from another client's file."""
+    import numpy as np
+    from retrieval import _scope_clients
+    from ask import _keep_source
+    s = Score("client scope")
+    for scope, source, allowed in cases.CLIENT_SCOPE:
+        rows = [(1, source, 1, "text", 0)]
+        kept, _ = _scope_clients(rows, np.eye(1, dtype="float32"), scope)
+        got = bool(kept)
+        s.check(got == allowed, f"scope={scope!r} {source} -> {got}, expected {allowed}")
+        if verbose:
+            print(f"  {'ok ' if got == allowed else 'FAIL'} {scope!r:10} {source}")
+    # Through search() itself, not just the filter — a guard that exists but is
+    # not wired in is the failure mode this whole suite is for.
+    conn = build_index()
+    from retrieval import search
+    for scope, forbidden in [("botha", "client:naidoo:fna.pdf"),
+                             ("naidoo", "client:botha:fna.pdf"),
+                             (None, "client:botha:fna.pdf")]:
+        hits = search(conn, "net salary monthly waiting period", top_k=8,
+                      client_scope=scope)
+        sources = {r[1] for r, _ in hits}
+        s.check(forbidden not in sources,
+                f"search(client_scope={scope!r}) returned {forbidden}")
+        if verbose:
+            print(f"  scope={scope!r:8} -> {sorted(sources)}")
+    own = {r[1] for r, _ in search(conn, "net salary monthly", top_k=8,
+                                   client_scope="botha")}
+    s.check("client:botha:fna.pdf" in own, "a client cannot reach their own file")
+
+    for room, allowed in cases.CLIENT_ROOMS:
+        got = _keep_source(room, "client:botha:fna.pdf")
+        s.check(got == allowed, f"{room} keeps a client file -> {got}, expected {allowed}")
+    return s
+
+
 def score_pdf(verbose=False) -> Score:
     """A redaction that only looks done is the failure worth catching."""
     import pdf_tools
@@ -205,6 +242,7 @@ def main() -> int:
         score_versioning(args.verbose),
         score_depth(args.verbose),
         score_pdf(args.verbose),
+        score_client_scope(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))

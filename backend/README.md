@@ -211,3 +211,28 @@ exists but belongs to someone else is itself a leak.
 
 An ambiguous filename is refused rather than guessed. Acting on the wrong
 document of the right client is still the wrong document.
+
+## One client's file never reaches another client's answer
+
+Client documents are indexed beside the product guides as
+`client:<cid>:<file>`. `retrieval.search(client_scope=...)` filters them
+**before ranking**, alongside the as-of mask and the room exclusions:
+
+- `client_scope=None` — no client page is retrievable at all
+- `client_scope="botha"` — only `client:botha:` pages, plus the shared guides
+
+The default is `None`, so a caller that forgets scoping leaks nothing rather
+than everything.
+
+This closes a real leak. The `roa` room previously fell through to "keep every
+source", so drafting a Record of Advice for one client could retrieve and cite
+a page out of another client's filed FNA — and `span_check` would pass it,
+because the figure genuinely was in the retrieved context. It would have read
+as a properly cited fact.
+
+`/api/ask` and its `show_only` branch both pass the scope; `show_only` needs it
+more, not less, since it returns raw page text straight to the adviser.
+
+`ask._keep_source` is the second layer, and the eval tests the guard through
+`search()` rather than the filter alone — a guard that exists but is not wired
+in is exactly the failure this suite is for.
