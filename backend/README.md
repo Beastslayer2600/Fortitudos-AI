@@ -327,3 +327,52 @@ at all. The correct answer is a destination the operating system already
 encrypts — BitLocker, FileVault, LUKS. **The archive holds client data in the
 clear: treat the destination exactly as you treat the vault.** The archive's own
 README says so, for whoever finds the drive.
+
+## Who may talk to the desk
+
+The desk was safe by accident: an `http.server` on loopback where only a local
+process could reach it. That holds until it is bound to anything else — which
+is exactly what remote access from a phone means.
+
+- a request from **loopback** is trusted, as before, so nothing about working
+  on the laptop changes
+- a request from **anywhere else** must send `Authorization: Bearer <token>`
+- if **no token is set**, a non-local request is refused outright
+
+That last line matters most. The failure to avoid is a desk exposed to the
+network and silently open because nobody set a secret. It fails closed.
+
+```bat
+set FORTITUDO_DESK_TOKEN=...
+```
+
+or start the desk on a non-loopback host once and it writes one to
+`desk-token.txt` beside the vault (never in the repo) and prints it.
+
+`/m/<slug>` stays public — a flyer QR is opened by a stranger and holds no
+client data. Nothing else is.
+
+The check runs before any route, `desk_extra`'s included, so a new route
+cannot be added outside the policy by accident. An unknown peer address is not
+treated as local: "unknown" is not "local", and treating it as such would be a
+fail-open in the one function whose job is failing closed.
+
+## Measuring the filer
+
+`sort_engine` files client documents automatically on the model's judgement.
+The `filing rails` eval suite checks everything that decides what happens
+*after* the model speaks — that an invented label cannot reach the vault, that
+low confidence parks rather than files, and that the review area is not inside
+the drop zone it rescues documents from.
+
+Accuracy itself needs the real classifier:
+
+```bat
+python eval_desk.py --live
+```
+
+That runs the classifier over labelled fixture documents and reports not just
+wrong answers but **confidently wrong** ones — a wrong answer above
+`MIN_CONFIDENCE` is the one that gets filed under the wrong person and is not
+noticed until the document is needed. That number is what says whether
+auto-filing is safe to leave on.

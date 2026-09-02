@@ -124,3 +124,32 @@ CLIENT_SCOPE = [
 # Which rooms may quote a client file at all.
 CLIENT_ROOMS = [("roa", True), ("fa", False), ("craft", False),
                 ("voice", False), ("drama", False), ("learn", False)]
+
+
+# Documents the filer sees, and where each belongs. The harm here is specific:
+# a misfiled client document is filed under the wrong PERSON, and nobody
+# notices until it is needed.
+FILING = [
+    # (text, expected doc_type)
+    ("SOUTH AFRICAN IDENTITY DOCUMENT. Surname BOTHA. Identity number "
+     "8001015009087.", "FICA / Identity"),
+    ("PROOF OF RESIDENCE. Municipal account for A Botha, 12 Kerk Street.",
+     "FICA / Identity"),
+    ("RISK PROFILE QUESTIONNAIRE. Question 4: how would you react to a 20% "
+     "fall in your portfolio?", "RPQ"),
+    ("FINANCIAL NEEDS ANALYSIS. Signed by the client and the adviser. Monthly "
+     "income and expenses recorded.", "Signed FNA"),
+    ("RECORD OF ADVICE. The following products were recommended and the "
+     "reasons are set out below.", "ROA"),
+    ("QUOTATION. Lifestyle Protector. Premium payable monthly. This quote is "
+     "valid for 30 days.", "Quote"),
+    ("Dear Mrs Botha, thank you for your email of last week regarding your "
+     "policy documents.", "Correspondence"),
+]
+
+# Confidence handling. The classifier is allowed to be wrong; it is not
+# allowed to be confidently wrong without a way to catch it.
+FILING_CONFIDENCE = [
+    (0.95, "filed"), (0.65, "filed"), (0.64, "review"), (0.2, "review"),
+    (0.0, "review"),
+]

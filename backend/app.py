@@ -24,6 +24,7 @@ from config import CHAT_MODEL, EMBED_MODEL, MAX_PAGE_CHARS, WEB_DIR, ROOT, DOCS_
 import compute
 import llm as llm_module
 from llm import OllamaError, chat, has_model, health
+import desk_auth
 import desk_extra
 import ask as ask_mod
 
@@ -220,8 +221,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _authorised(self, parts) -> bool:
+        """Loopback is trusted; anything else needs the desk token.
+
+        Checked before any route runs, including desk_extra's, so a new route
+        cannot be added outside the policy by accident.
+        """
+        peer = ""
+        try:
+            peer = str(self.client_address[0])
+        except Exception:
+            peer = ""
+        allowed, why = desk_auth.check(peer, parts, self.headers)
+        if not allowed:
+            self.send_json({"error": why}, 401)
+        return allowed
+
     def do_GET(self):
         parts = [unquote(x) for x in urlparse(self.path).path.strip("/").split("/") if x]
+        if not self._authorised(parts):
+            return
         try:
             if desk_extra.handle_get(self, parts):
                 return
@@ -300,6 +319,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parts = [unquote(x) for x in urlparse(self.path).path.strip("/").split("/") if x]
+        if not self._authorised(parts):
+            return
         try:
             body = json_body(self)
             if desk_extra.handle_post(self, parts, body):
@@ -483,6 +504,22 @@ def main():
     server = ThreadingHTTPServer((args.host, PORT), Handler)
     print(f"Fortitudo AI running at http://{args.host}:{PORT}")
     print(f"Chat model: {CHAT_MODEL}  |  Embed: {EMBED_MODEL}")
+
+    # Bound to anything but loopback, this desk is reachable from the network
+    # while holding a client vault. Say so loudly, and mint a token so remote
+    # access is possible at all — it fails closed without one.
+    exposed = not desk_auth.is_loopback(args.host) and args.host != ""
+    if exposed:
+        token = desk_auth.ensure_token(create=True)
+        print()
+        print("  This desk is listening on the network, not just this machine.")
+        print("  Requests from other machines must send the desk token:")
+        print(f"      Authorization: Bearer {token or '(could not write a token)'}")
+        print(f"  Token file: {desk_auth.TOKEN_FILE}")
+        print("  It holds a client vault. Do not expose it to the internet.")
+        print()
+    else:
+        print("Local only: requests from other machines are refused.")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

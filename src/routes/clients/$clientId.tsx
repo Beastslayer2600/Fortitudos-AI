@@ -172,30 +172,8 @@ function ClientPage() {
         </TabsContent>
 
         <TabsContent value="documents" className="mt-6">
-          <VaultDocuments clientId={client.id} />
+          <Documents clientId={client.id} local={documents} />
           <FileForm clientId={client.id} />
-          <ul className="mt-6 space-y-2">
-            {documents.map((d) => (
-              <li
-                key={d.id}
-                className="rounded-lg bg-surface px-4 py-3 shadow-[var(--shadow-border)]"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm">{d.filename}</p>
-                  <Badge>{d.docType}</Badge>
-                </div>
-                <p className="mt-1 text-xs text-subtle">
-                  {formatBytes(d.size)} · {formatDate(d.createdAt)}
-                </p>
-                {d.text && (
-                  <p className="mt-2 text-sm text-muted">{d.text}</p>
-                )}
-              </li>
-            ))}
-            {documents.length === 0 && (
-              <li className="text-sm text-muted">No documents filed yet.</li>
-            )}
-          </ul>
         </TabsContent>
 
         <TabsContent value="notes" className="mt-6">
@@ -607,16 +585,29 @@ function DraftPanel({
 
 
 /**
- * Documents as the vault holds them on disk, which is a different set from the
- * ones added in the browser. A PDF here can be opened in the workbench: the
- * document on one side, what may be done to it on the other.
+ * One list, not two.
+ *
+ * The desk has always had two ideas of a document: the vault on disk, which is
+ * the FAIS record, and a browser-side list used for working notes. They were
+ * shown as separate unjoined lists in the same tab, which makes "where did my
+ * file go" inevitable — and worse, lets someone believe a document is filed
+ * when it only exists in this browser.
+ *
+ * So they are merged and each row says where it actually lives. A row that is
+ * only on this device is not filed, and says so.
  */
-function VaultDocuments({ clientId }: { clientId: string }) {
-  const [docs, setDocs] = useState<
+function Documents({
+  clientId,
+  local,
+}: {
+  clientId: string;
+  local: { id: string; filename: string; docType: string; size: number; createdAt: string; text?: string }[];
+}) {
+  const [vault, setVault] = useState<
     { id: number; filename: string; doc_type: string }[]
   >([]);
   const [openId, setOpenId] = useState<number | null>(null);
-  const [state, setState] = useState<"idle" | "loading" | "offline">("loading");
+  const [state, setState] = useState<"loading" | "ready" | "offline">("loading");
 
   useEffect(() => {
     let live = true;
@@ -624,8 +615,8 @@ function VaultDocuments({ clientId }: { clientId: string }) {
       .vaultClient(clientId)
       .then((c) => {
         if (!live) return;
-        setDocs(c.documents ?? []);
-        setState("idle");
+        setVault(c.documents ?? []);
+        setState("ready");
       })
       .catch(() => live && setState("offline"));
     return () => {
@@ -637,37 +628,76 @@ function VaultDocuments({ clientId }: { clientId: string }) {
     return <PdfWorkbench docId={openId} clientId={clientId} onClose={() => setOpenId(null)} />;
   }
 
-  if (state === "offline") {
-    return (
-      <p className="mb-6 rounded-lg bg-surface px-4 py-3 text-sm text-muted shadow-[var(--shadow-border)]">
-        The desk backend is not running, so filed documents cannot be opened.
-        Start it with &ldquo;Start Backend Only.bat&rdquo;.
-      </p>
-    );
-  }
-
-  const pdfs = docs.filter((d) => d.filename.toLowerCase().endsWith(".pdf"));
-  if (state === "loading" || pdfs.length === 0) return null;
+  const filedNames = new Set(vault.map((d) => d.filename.toLowerCase()));
+  const rows = [
+    ...vault.map((d) => ({
+      key: `vault-${d.id}`,
+      filename: d.filename,
+      docType: d.doc_type,
+      where: "filed" as const,
+      docId: d.id,
+      detail: "",
+    })),
+    // Only the ones the vault does not already have, so a document filed
+    // through the desk is not listed twice.
+    ...local
+      .filter((d) => !filedNames.has(d.filename.toLowerCase()))
+      .map((d) => ({
+        key: `local-${d.id}`,
+        filename: d.filename,
+        docType: d.docType,
+        where: "device" as const,
+        docId: null,
+        detail: `${formatBytes(d.size)} · ${formatDate(d.createdAt)}`,
+      })),
+  ];
 
   return (
     <div className="mb-6">
-      <h3 className="text-sm font-semibold">Filed documents</h3>
-      <ul className="mt-2 space-y-2">
-        {pdfs.map((d) => (
+      {state === "offline" && (
+        <p className="mb-4 rounded-lg bg-surface px-4 py-3 text-sm text-muted shadow-[var(--shadow-border)]">
+          The desk backend is not running, so filed documents cannot be listed or
+          opened. Only what is held in this browser is shown. Start it with
+          &ldquo;Start Backend Only.bat&rdquo;.
+        </p>
+      )}
+      <ul className="space-y-2">
+        {rows.map((row) => (
           <li
-            key={d.id}
-            className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface px-4 py-3 shadow-[var(--shadow-border)]"
+            key={row.key}
+            className="rounded-lg bg-surface px-4 py-3 shadow-[var(--shadow-border)]"
           >
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm">{d.filename}</p>
-              <Badge>{d.doc_type}</Badge>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm">{row.filename}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge>{row.docType}</Badge>
+                {row.where === "filed" ? (
+                  <span className="text-xs text-subtle">In the client file</span>
+                ) : (
+                  <span className="text-xs text-danger">On this device only</span>
+                )}
+                {row.docId !== null && row.filename.toLowerCase().endsWith(".pdf") && (
+                  <Button variant="outline" onClick={() => setOpenId(row.docId)}>
+                    Open
+                  </Button>
+                )}
+              </div>
             </div>
-            <Button variant="outline" onClick={() => setOpenId(d.id)}>
-              Open
-            </Button>
+            {row.detail && <p className="mt-1 text-xs text-subtle">{row.detail}</p>}
           </li>
         ))}
+        {rows.length === 0 && state !== "loading" && (
+          <li className="text-sm text-muted">No documents yet.</li>
+        )}
       </ul>
+      {rows.some((r) => r.where === "device") && (
+        <p className="mt-3 text-xs text-muted">
+          &ldquo;On this device only&rdquo; means the file is in this browser and{" "}
+          <strong>not in the client&apos;s file on disk</strong>. It is not part of
+          the record and will not survive clearing the browser. Upload it below to
+          file it properly.
+        </p>
+      )}
     </div>
   );
 }

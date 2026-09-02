@@ -134,6 +134,43 @@ def score_depth(verbose=False) -> Score:
     return s
 
 
+def score_filing(verbose=False) -> Score:
+    """The filer's rails, which hold with or without a model running.
+
+    Accuracy needs the real classifier and lives in --live. What is checked
+    here is everything that decides what happens to a document once the model
+    has spoken: that a label it invents cannot reach the vault, that low
+    confidence parks rather than files, and that the review area is not inside
+    the drop zone it is meant to rescue documents from.
+    """
+    import client_store, sort_engine
+    s = Score("filing rails")
+
+    labels = set(sort_engine.doc_type_labels())
+    s.check(labels == set(client_store.FOLDERS), "the filer's labels drifted from FOLDERS")
+    s.check(client_store.AI_DRAFT_FOLDER not in client_store.FOLDERS.values(),
+            "model drafts share a folder with filed evidence")
+
+    for _text, expected in cases.FILING:
+        s.check(expected in labels, f"{expected!r} is not a label the filer can use")
+
+    for confidence, outcome in cases.FILING_CONFIDENCE:
+        files = confidence >= sort_engine.MIN_CONFIDENCE
+        s.check(files == (outcome == "filed"),
+                f"confidence {confidence} -> {'filed' if files else 'review'}, "
+                f"expected {outcome}")
+        if verbose:
+            print(f"  {confidence:.2f} -> {'filed' if files else 'review'}")
+
+    # A parked file inside the drop zone would be picked up and reprocessed
+    # forever, which looks exactly like the engine working.
+    s.check(not str(sort_engine.REVIEW_ZONE).startswith(str(sort_engine.DROP_ZONE) + "/"),
+            "the review area is inside the drop zone")
+    s.check(sort_engine.MIN_CONFIDENCE > 0.5,
+            "a coin flip is enough to file a client document")
+    return s
+
+
 def score_backup(verbose=False) -> Score:
     """The properties that separate a backup from a hope."""
     import sqlite3, tempfile
@@ -268,6 +305,43 @@ def score_pdf(verbose=False) -> Score:
     return s
 
 
+def score_filing_live(verbose=False) -> Score:
+    """Does the classifier actually get documents right? Needs Ollama.
+
+    This is the number that says whether auto-filing is safe to leave on. A
+    wrong answer here files a client document under the wrong person, and
+    nobody finds out until it is needed.
+    """
+    import client_store, sort_engine
+    s = Score("live filing")
+    engine = sort_engine.SortEngine()
+    real = client_store.list_clients
+    client_store.list_clients = lambda: [
+        {"id": "botha", "name": "Mrs A Botha"},
+        {"id": "naidoo", "name": "Mr S Naidoo"},
+    ]
+    try:
+        for text, expected in cases.FILING:
+            result = engine._classify(text, "document.pdf")
+            if not result:
+                s.check(False, f"no answer for {expected}")
+                continue
+            got = result.get("doc_type")
+            confidence = float(result.get("confidence") or 0)
+            s.check(got == expected,
+                    f"{text[:40]!r} -> {got!r} at {confidence:.0%}, expected {expected!r}")
+            # Confidently wrong is the dangerous state, not wrong.
+            if got != expected and confidence >= sort_engine.MIN_CONFIDENCE:
+                s.check(False, f"CONFIDENTLY WRONG: {got!r} at {confidence:.0%} "
+                               f"would have been filed as {expected!r}")
+            if verbose:
+                mark = "ok " if got == expected else "FAIL"
+                print(f"  {mark} {expected:16} got {str(got):16} {confidence:.0%}")
+    finally:
+        client_store.list_clients = real
+    return s
+
+
 def score_live(conn, verbose=False) -> Score:
     """Ask the real model. Only meaningful with Ollama running."""
     from ask import answer
@@ -304,9 +378,11 @@ def main() -> int:
         score_pdf(args.verbose),
         score_client_scope(args.verbose),
         score_backup(args.verbose),
+        score_filing(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))
+        scores.append(score_filing_live(args.verbose))
     return report(scores)
 
 

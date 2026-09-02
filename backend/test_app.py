@@ -1957,5 +1957,104 @@ class TheBackupCanActuallyBeRestored(unittest.TestCase):
 
 
 
+class TheDeskIsOpenLocallyAndClosedRemotely(unittest.TestCase):
+    """Safe by accident until it is bound to the network. Now safe on purpose."""
+
+    class Headers:
+        def __init__(self, value=None):
+            self.value = value
+
+        def get(self, _key):
+            return self.value
+
+    def setUp(self):
+        import desk_auth
+        self.auth = desk_auth
+        self._env = dict(os.environ)
+        os.environ.pop("FORTITUDO_DESK_TOKEN", None)
+        os.environ["FORTITUDO_TOKEN_FILE"] = tempfile.mktemp()
+        self._file = desk_auth.TOKEN_FILE
+        desk_auth.TOKEN_FILE = Path(os.environ["FORTITUDO_TOKEN_FILE"])
+
+    def tearDown(self):
+        self.auth.TOKEN_FILE = self._file
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def test_loopback_is_trusted_so_nothing_local_changes(self):
+        for peer in ("127.0.0.1", "::1", "localhost"):
+            ok, _ = self.auth.check(peer, ["api", "clients"], self.Headers())
+            self.assertTrue(ok, peer)
+
+    def test_an_unknown_peer_is_not_treated_as_local(self):
+        """"Unknown" is not "local". That would be a fail-open."""
+        for peer in ("", "   ", None):
+            self.assertFalse(self.auth.is_loopback(peer or ""))
+            ok, _ = self.auth.check(peer or "", ["api", "clients"], self.Headers())
+            self.assertFalse(ok, repr(peer))
+
+    def test_a_hostname_that_merely_looks_local_is_refused(self):
+        self.assertFalse(self.auth.is_loopback("127.0.0.1.evil.com"))
+        self.assertFalse(self.auth.is_loopback("localhost.attacker.net"))
+
+    def test_a_remote_request_with_no_token_set_is_refused_not_allowed(self):
+        """The failure to avoid: exposed to the network and silently open."""
+        ok, why = self.auth.check("192.168.1.50", ["api", "clients"], self.Headers())
+        self.assertFalse(ok)
+        self.assertIn("no token is set", why)
+        self.assertIn("FORTITUDO_DESK_TOKEN", why)
+
+    def test_a_remote_request_with_the_right_token_is_allowed(self):
+        os.environ["FORTITUDO_DESK_TOKEN"] = "s3cret-token"
+        ok, _ = self.auth.check(
+            "192.168.1.50", ["api", "clients"], self.Headers("Bearer s3cret-token"))
+        self.assertTrue(ok)
+
+    def test_a_wrong_or_missing_token_is_refused(self):
+        os.environ["FORTITUDO_DESK_TOKEN"] = "s3cret-token"
+        for header in (None, "", "Bearer wrong", "s3cret-token", "Basic s3cret-token"):
+            ok, _ = self.auth.check(
+                "192.168.1.50", ["api", "clients"], self.Headers(header))
+            self.assertFalse(ok, repr(header))
+
+    def test_the_comparison_is_constant_time(self):
+        """A fast rejection leaks how much of the token was right."""
+        import inspect
+        src = inspect.getsource(self.auth.check)
+        self.assertIn("compare_digest", src)
+        self.assertNotIn("offered == token", src)
+
+    def test_public_mock_pages_stay_public(self):
+        """A flyer QR is opened by a stranger, and holds no client data."""
+        ok, _ = self.auth.check("41.20.9.8", ["m", "joe-plumbing"], self.Headers())
+        self.assertTrue(ok)
+
+    def test_nothing_else_is_public(self):
+        for parts in (["api", "clients"], ["api", "ask"], ["api", "pdf", "1"],
+                      ["api", "documents", "1"], []):
+            self.assertFalse(self.auth.is_public_path(parts), parts)
+
+    def test_a_token_is_minted_only_when_asked(self):
+        self.assertEqual(self.auth.desk_token(), "")
+        self.assertEqual(self.auth.ensure_token(create=False), "")
+        minted = self.auth.ensure_token(create=True)
+        self.assertTrue(len(minted) > 30)
+        self.assertEqual(self.auth.desk_token(), minted)
+
+    def test_the_token_lives_beside_the_vault_not_in_the_repo(self):
+        import inspect, desk_auth
+        src = inspect.getsource(desk_auth)
+        self.assertIn("DATA_ROOT", src)
+
+    def test_every_route_passes_the_guard_before_running(self):
+        """Including desk_extra's, so a new route cannot slip outside policy."""
+        import inspect, app
+        for method in (app.Handler.do_GET, app.Handler.do_POST):
+            src = inspect.getsource(method)
+            self.assertLess(src.index("_authorised"), src.index("desk_extra"),
+                            f"{method.__name__} runs a route before authorising")
+
+
+
 if __name__ == "__main__":
     unittest.main()
