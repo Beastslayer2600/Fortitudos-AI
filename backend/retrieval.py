@@ -165,21 +165,54 @@ def _drop_prefixes(rows, matrix, exclude_prefixes: Tuple[str, ...]):
     return [rows[i] for i in keep], (matrix[keep] if keep else matrix[:0])
 
 
+CLIENT_PREFIX = "client:"
+
+
+def _scope_clients(rows, matrix, client_scope: Optional[str]):
+    """Keep a client's own filed pages; drop every other client's.
+
+    Client documents are indexed as `client:<cid>:<file>` and sit in the same
+    index as the product guides. Without this, drafting a Record of Advice for
+    one client could retrieve and cite a page out of another client's file —
+    and span_check would not catch it, because the figure genuinely is in the
+    retrieved context. It would read as a properly cited fact.
+
+    `client_scope` is the client the answer is FOR. None means no client is
+    attached, and then no client page belongs in the answer at all.
+    """
+    if not rows:
+        return rows, matrix
+    allowed = f"{CLIENT_PREFIX}{client_scope}:" if client_scope else None
+    keep = [
+        i for i, r in enumerate(rows)
+        if not str(r[1]).startswith(CLIENT_PREFIX)
+        or (allowed is not None and str(r[1]).startswith(allowed))
+    ]
+    if len(keep) == len(rows):
+        return rows, matrix
+    return [rows[i] for i in keep], (matrix[keep] if keep else matrix[:0])
+
+
 def search(
     conn,
     query: str,
     top_k: int = TOP_K,
     as_of: Optional[str] = None,
     exclude_prefixes: Tuple[str, ...] = (),
+    client_scope: Optional[str] = None,
 ) -> List[Tuple[Any, float]]:
     """Hybrid dense + BM25 retrieval with Reciprocal Rank Fusion.
 
-    Both filters run before scoring, so ranking never sees a page the room may
-    not use or one that was not yet in force.
+    Every filter runs before scoring, so ranking never sees a page the room may
+    not use, one that was not yet in force, or one belonging to a different
+    client. Filtering here rather than at the caller means a caller that
+    forgets cannot leak: `client_scope=None` drops all client pages, so the
+    default is the safe one.
     """
     rows, matrix = store.load_all(conn)
     rows, matrix = _mask(conn, rows, matrix, as_of)
     rows, matrix = _drop_prefixes(rows, matrix, exclude_prefixes)
+    rows, matrix = _scope_clients(rows, matrix, client_scope)
     if not rows:
         return []
 

@@ -42,6 +42,11 @@ def list_learn_docs():
 
 
 def handle_get(handler, parts) -> bool:
+    # The PDF workbench owns /api/pdf/*. It only ever reads a filed document
+    # and writes a new draft; it cannot modify what it opens.
+    import pdf_api
+    if pdf_api.handle_get(handler, parts):
+        return True
     if parts == ["api", "build"]:
         handler.send_json({"desk_build": DESK_BUILD, "public_base": public_base() or None})
         return True
@@ -102,6 +107,9 @@ def handle_get(handler, parts) -> bool:
 
 
 def handle_post(handler, parts, body) -> bool:
+    import pdf_api
+    if pdf_api.handle_post(handler, parts, body):
+        return True
     if parts == ["api", "learn", "teach"]:
         from learn_teach import file_lesson
         title = str(body.get("title") or "Lesson").strip()

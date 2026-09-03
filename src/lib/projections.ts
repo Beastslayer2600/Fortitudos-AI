@@ -1,4 +1,4 @@
-import type { ProjectionInputs, ProjectionSummary } from "./types";
+import type { ProjectionInputs, ProjectionSummary } from "./types.ts";
 
 export const emptyProjectionInputs = (): ProjectionInputs => ({
   currentValue: 250000,

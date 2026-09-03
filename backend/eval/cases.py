@@ -92,3 +92,64 @@ VERSION_CONFLICT = [
 # Which rooms take the slower reasoning path. Advisor and RoA earn it.
 DEEP_ROOMS = [("fa", True), ("roa", True), ("craft", False),
               ("voice", False), ("drama", False), ("learn", False)]
+
+
+# What must never survive a redaction, and what must. A redaction that eats the
+# whole document is as useless as one that removes nothing.
+REDACTION = [
+    # (page text, patterns, must be gone, must remain)
+    ("Mrs Botha ID number 8001015009087", ["sa_id"], "8001015009087", "Botha"),
+    ("Account 1234567890 for the premium", ["account"], "1234567890", "premium"),
+    ("Tax 0123456789 on file", ["tax"], "0123456789", "file"),
+]
+
+# Page specs and how many pages they should yield from a 4-page document.
+PAGE_SPECS = [("1", 1), ("1,3", 2), ("2-4", 3), ("1,1,1", 1), ("2,99", 1), ("3-1", 3)]
+
+
+# Which sources an answer for a given client may be built from. The dangerous
+# case is not an irrelevant page — it is another client's page, cited correctly.
+CLIENT_SCOPE = [
+    # (scope, source, may it be retrieved)
+    (None, "guide:lifestyle_protector", True),
+    (None, "client:botha:fna.pdf", False),
+    ("botha", "guide:lifestyle_protector", True),
+    ("botha", "client:botha:fna.pdf", True),
+    ("botha", "client:naidoo:fna.pdf", False),
+    ("botha", "client:botha_estate:will.pdf", False),
+    ("bot", "client:botha:fna.pdf", False),
+    ("naidoo", "client:botha:fna.pdf", False),
+]
+
+# Which rooms may quote a client file at all.
+CLIENT_ROOMS = [("roa", True), ("fa", False), ("craft", False),
+                ("voice", False), ("drama", False), ("learn", False)]
+
+
+# Documents the filer sees, and where each belongs. The harm here is specific:
+# a misfiled client document is filed under the wrong PERSON, and nobody
+# notices until it is needed.
+FILING = [
+    # (text, expected doc_type)
+    ("SOUTH AFRICAN IDENTITY DOCUMENT. Surname BOTHA. Identity number "
+     "8001015009087.", "FICA / Identity"),
+    ("PROOF OF RESIDENCE. Municipal account for A Botha, 12 Kerk Street.",
+     "FICA / Identity"),
+    ("RISK PROFILE QUESTIONNAIRE. Question 4: how would you react to a 20% "
+     "fall in your portfolio?", "RPQ"),
+    ("FINANCIAL NEEDS ANALYSIS. Signed by the client and the adviser. Monthly "
+     "income and expenses recorded.", "Signed FNA"),
+    ("RECORD OF ADVICE. The following products were recommended and the "
+     "reasons are set out below.", "ROA"),
+    ("QUOTATION. Lifestyle Protector. Premium payable monthly. This quote is "
+     "valid for 30 days.", "Quote"),
+    ("Dear Mrs Botha, thank you for your email of last week regarding your "
+     "policy documents.", "Correspondence"),
+]
+
+# Confidence handling. The classifier is allowed to be wrong; it is not
+# allowed to be confidently wrong without a way to catch it.
+FILING_CONFIDENCE = [
+    (0.95, "filed"), (0.65, "filed"), (0.64, "review"), (0.2, "review"),
+    (0.0, "review"),
+]

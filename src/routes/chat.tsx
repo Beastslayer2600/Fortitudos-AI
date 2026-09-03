@@ -10,7 +10,8 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { applyDeskActions, type DeskAgentAction } from "@/lib/desk-agent";
+import { applyDeskActions, type DeskAgentAction, type VaultDocument } from "@/lib/desk-agent";
+import { deskApi } from "@/lib/desk-api";
 import { getLlmStatus, runDeskAgent } from "@/lib/desk-chat-ai";
 import { matchClients, parseDeskIntent } from "@/lib/desk-chat";
 import { buildFnaDraft } from "@/lib/fna-form";
@@ -51,6 +52,12 @@ function ChatPage() {
     title: string;
   } | null>(null);
   const [activeClientId, setActiveClientId] = useState<string | null>(null);
+  /**
+   * The active client's filed documents. Loaded when the client changes so the
+   * agent can be told what exists — and, just as importantly, so it can only
+   * name documents belonging to the client actually on the desk.
+   */
+  const vaultDocs = useRef<VaultDocument[]>([]);
   const fnaFactLines = useRef<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -73,6 +80,32 @@ function ChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages.length, busy, lastThinking]);
+
+  useEffect(() => {
+    let live = true;
+    if (!activeClientId) {
+      vaultDocs.current = [];
+      return;
+    }
+    deskApi
+      .vaultClient(activeClientId)
+      .then((c) => {
+        if (!live) return;
+        vaultDocs.current = (c.documents ?? []).map((d) => ({
+          id: d.id,
+          filename: d.filename,
+          docType: d.doc_type,
+          clientId: activeClientId,
+        }));
+      })
+      // The desk works without the backend; it just cannot touch filed PDFs.
+      .catch(() => {
+        if (live) vaultDocs.current = [];
+      });
+    return () => {
+      live = false;
+    };
+  }, [activeClientId]);
 
   async function handleSend(raw: string) {
     const text = raw.trim();
@@ -146,6 +179,7 @@ function ChatPage() {
             notes: state.notes,
             emails: state.emails,
             projections: state.projections,
+            vaultDocuments: vaultDocs.current,
           },
           {
             updateClient,
@@ -174,6 +208,32 @@ function ChatPage() {
         if (applied.applied.length) {
           reply += `\n\n—\n**File changes:**\n${applied.applied.map((a) => `· ${a}`).join("\n")}`;
         }
+        // PDF operations are HTTP, so applyDeskActions resolved and scoped
+        // them and left them for us to run. Each writes a new draft; none can
+        // change the document it read.
+        for (const req of applied.pdfRequests ?? []) {
+          try {
+            const result = await deskApi.pdfAction(
+              req.docId,
+              req.action,
+              req.body,
+              req.clientId,
+            );
+            const removed = result.removed?.length
+              ? ` Removed: ${result.removed.join(", ")}.`
+              : "";
+            applied.applied.push(
+              `${req.action} on ${req.filename} → saved ${result.saved_as}.${removed}`,
+            );
+          } catch (e) {
+            applied.applied.push(
+              `${req.action} on ${req.filename} failed: ${
+                e instanceof Error ? e.message : String(e)
+              }`,
+            );
+          }
+        }
+
         if (applied.output) {
           reply += `\n\n---\n${applied.output}`;
         }

@@ -134,6 +134,214 @@ def score_depth(verbose=False) -> Score:
     return s
 
 
+def score_filing(verbose=False) -> Score:
+    """The filer's rails, which hold with or without a model running.
+
+    Accuracy needs the real classifier and lives in --live. What is checked
+    here is everything that decides what happens to a document once the model
+    has spoken: that a label it invents cannot reach the vault, that low
+    confidence parks rather than files, and that the review area is not inside
+    the drop zone it is meant to rescue documents from.
+    """
+    import client_store, sort_engine
+    s = Score("filing rails")
+
+    labels = set(sort_engine.doc_type_labels())
+    s.check(labels == set(client_store.FOLDERS), "the filer's labels drifted from FOLDERS")
+    s.check(client_store.AI_DRAFT_FOLDER not in client_store.FOLDERS.values(),
+            "model drafts share a folder with filed evidence")
+
+    for _text, expected in cases.FILING:
+        s.check(expected in labels, f"{expected!r} is not a label the filer can use")
+
+    for confidence, outcome in cases.FILING_CONFIDENCE:
+        files = confidence >= sort_engine.MIN_CONFIDENCE
+        s.check(files == (outcome == "filed"),
+                f"confidence {confidence} -> {'filed' if files else 'review'}, "
+                f"expected {outcome}")
+        if verbose:
+            print(f"  {confidence:.2f} -> {'filed' if files else 'review'}")
+
+    # A parked file inside the drop zone would be picked up and reprocessed
+    # forever, which looks exactly like the engine working.
+    s.check(not str(sort_engine.REVIEW_ZONE).startswith(str(sort_engine.DROP_ZONE) + "/"),
+            "the review area is inside the drop zone")
+    s.check(sort_engine.MIN_CONFIDENCE > 0.5,
+            "a coin flip is enough to file a client document")
+    return s
+
+
+def score_backup(verbose=False) -> Score:
+    """The properties that separate a backup from a hope."""
+    import sqlite3, tempfile
+    from pathlib import Path as P
+    import vault_backup as vb
+
+    s = Score("backup")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = P(tmp)
+        vault, arch = root / "vault", root / "archive"
+        (vault / "clients" / "botha").mkdir(parents=True)
+        (vault / "clients" / "botha" / "fna.pdf").write_bytes(b"%PDF signed")
+        conn = sqlite3.connect(vault / "clients.db")
+        conn.execute("CREATE TABLE c (id TEXT)")
+        conn.execute("INSERT INTO c VALUES ('botha')")
+        conn.commit()                      # left open, as the desk leaves it
+
+        first = vb.back_up(vault, arch).id
+        s.check(vb.verify(arch).ok, "a fresh backup did not verify")
+
+        out = root / "restored"
+        vb.restore(arch, out)
+        s.check((out / "clients" / "botha" / "fna.pdf").read_bytes() == b"%PDF signed",
+                "a restored file did not match")
+        rdb = sqlite3.connect(out / "clients.db")
+        s.check(rdb.execute("SELECT id FROM c").fetchall() == [("botha",)],
+                "a live database did not survive the round trip")
+        rdb.close()
+        conn.close()
+
+        # Immutability: a deletion must not reach the archive.
+        (vault / "clients" / "botha" / "fna.pdf").unlink()
+        vb.back_up(vault, arch)
+        old_dir = root / "old"
+        vb.restore(arch, old_dir, snapshot_id=first)
+        s.check((old_dir / "clients" / "botha" / "fna.pdf").exists(),
+                "a deleted file was not recoverable from an older snapshot")
+
+        # Same-second runs must not overwrite each other.
+        ids = {vb.back_up(vault, arch).id for _ in range(3)}
+        s.check(len(ids) == 3, "backups in the same second collided")
+        s.check(vb.snapshots(arch)[-1].id == max(ids, key=vb._order_key),
+                "the newest snapshot did not sort last")
+
+        # Corruption must be caught rather than restored.
+        obj = next(p for p in (arch / "objects").rglob("*") if p.is_file())
+        obj.write_bytes(b"rot")
+        # Archive-wide: the rotted object is held only by an older snapshot,
+        # which is precisely the case verifying the newest one misses.
+        s.check(not vb.verify_archive(arch).ok, "corruption was not detected")
+        try:
+            vb.restore(arch, root / "bad", snapshot_id=first)
+            s.check(False, "a corrupt object was restored")
+        except vb.BackupError:
+            s.check(True, "")
+        if verbose:
+            print(f"  snapshots: {[x.id for x in vb.snapshots(arch)]}")
+    return s
+
+
+def score_client_scope(verbose=False) -> Score:
+    """No answer for one client may be built from another client's file."""
+    import numpy as np
+    from retrieval import _scope_clients
+    from ask import _keep_source
+    s = Score("client scope")
+    for scope, source, allowed in cases.CLIENT_SCOPE:
+        rows = [(1, source, 1, "text", 0)]
+        kept, _ = _scope_clients(rows, np.eye(1, dtype="float32"), scope)
+        got = bool(kept)
+        s.check(got == allowed, f"scope={scope!r} {source} -> {got}, expected {allowed}")
+        if verbose:
+            print(f"  {'ok ' if got == allowed else 'FAIL'} {scope!r:10} {source}")
+    # Through search() itself, not just the filter — a guard that exists but is
+    # not wired in is the failure mode this whole suite is for.
+    conn = build_index()
+    from retrieval import search
+    for scope, forbidden in [("botha", "client:naidoo:fna.pdf"),
+                             ("naidoo", "client:botha:fna.pdf"),
+                             (None, "client:botha:fna.pdf")]:
+        hits = search(conn, "net salary monthly waiting period", top_k=8,
+                      client_scope=scope)
+        sources = {r[1] for r, _ in hits}
+        s.check(forbidden not in sources,
+                f"search(client_scope={scope!r}) returned {forbidden}")
+        if verbose:
+            print(f"  scope={scope!r:8} -> {sorted(sources)}")
+    own = {r[1] for r, _ in search(conn, "net salary monthly", top_k=8,
+                                   client_scope="botha")}
+    s.check("client:botha:fna.pdf" in own, "a client cannot reach their own file")
+
+    for room, allowed in cases.CLIENT_ROOMS:
+        got = _keep_source(room, "client:botha:fna.pdf")
+        s.check(got == allowed, f"{room} keeps a client file -> {got}, expected {allowed}")
+    return s
+
+
+def score_pdf(verbose=False) -> Score:
+    """A redaction that only looks done is the failure worth catching."""
+    import pdf_tools
+    s = Score("pdf")
+    for text, patterns, gone, kept in cases.REDACTION:
+        src = pdf_tools.make_pdf([text])
+        out, removed = pdf_tools.redact(src, patterns=patterns)
+        body = " ".join(p.text for p in pdf_tools.read_pages(out))
+        s.check(gone not in body, f"{gone} survived extraction")
+        # The stronger check: gone from the file, not merely from the render.
+        s.check(gone.encode() not in out, f"{gone} still in the raw bytes")
+        s.check(kept in body, f"{kept} was destroyed by the redaction")
+        s.check(bool(removed), f"{patterns} reported nothing removed")
+        if verbose:
+            print(f"  redact {patterns} -> removed {removed}")
+
+    four = pdf_tools.make_pdf(["a", "b", "c", "d"])
+    for spec, expected in cases.PAGE_SPECS:
+        got = pdf_tools.page_count(pdf_tools.select_pages(four, spec))
+        s.check(got == expected, f"select {spec!r} -> {got} pages, expected {expected}")
+        if verbose:
+            print(f"  select {spec!r} -> {got}")
+
+    # A scan cannot be redacted, and saying so is the whole point.
+    try:
+        pdf_tools.redact(pdf_tools.make_pdf([""]), patterns=["sa_id"])
+        s.check(False, "a scan was redacted instead of refused")
+    except pdf_tools.NotRedactable:
+        s.check(True, "")
+
+    # Stamping must not destroy what it marks.
+    stamped = pdf_tools.stamp(pdf_tools.make_pdf(["Original body"]), "DRAFT")
+    body = " ".join(p.text for p in pdf_tools.read_pages(stamped))
+    s.check("DRAFT" in body and "Original body" in body, "stamp lost the page content")
+    return s
+
+
+def score_filing_live(verbose=False) -> Score:
+    """Does the classifier actually get documents right? Needs Ollama.
+
+    This is the number that says whether auto-filing is safe to leave on. A
+    wrong answer here files a client document under the wrong person, and
+    nobody finds out until it is needed.
+    """
+    import client_store, sort_engine
+    s = Score("live filing")
+    engine = sort_engine.SortEngine()
+    real = client_store.list_clients
+    client_store.list_clients = lambda: [
+        {"id": "botha", "name": "Mrs A Botha"},
+        {"id": "naidoo", "name": "Mr S Naidoo"},
+    ]
+    try:
+        for text, expected in cases.FILING:
+            result = engine._classify(text, "document.pdf")
+            if not result:
+                s.check(False, f"no answer for {expected}")
+                continue
+            got = result.get("doc_type")
+            confidence = float(result.get("confidence") or 0)
+            s.check(got == expected,
+                    f"{text[:40]!r} -> {got!r} at {confidence:.0%}, expected {expected!r}")
+            # Confidently wrong is the dangerous state, not wrong.
+            if got != expected and confidence >= sort_engine.MIN_CONFIDENCE:
+                s.check(False, f"CONFIDENTLY WRONG: {got!r} at {confidence:.0%} "
+                               f"would have been filed as {expected!r}")
+            if verbose:
+                mark = "ok " if got == expected else "FAIL"
+                print(f"  {mark} {expected:16} got {str(got):16} {confidence:.0%}")
+    finally:
+        client_store.list_clients = real
+    return s
+
+
 def score_live(conn, verbose=False) -> Score:
     """Ask the real model. Only meaningful with Ollama running."""
     from ask import answer
@@ -167,9 +375,14 @@ def main() -> int:
         score_gate(args.verbose),
         score_versioning(args.verbose),
         score_depth(args.verbose),
+        score_pdf(args.verbose),
+        score_client_scope(args.verbose),
+        score_backup(args.verbose),
+        score_filing(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))
+        scores.append(score_filing_live(args.verbose))
     return report(scores)
 
 

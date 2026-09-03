@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
-import { llmComplete } from "./llm";
-import { pageByRef } from "./retrieval";
-import { withIdentity } from "./fortitudo";
+import { llmComplete } from "./llm.ts";
+import { pageByRef } from "./retrieval.ts";
+import { withIdentity } from "./fortitudo.ts";
 
 const PRODUCT_TASK = `You answer questions about financial product documentation for a South African financial adviser.
 

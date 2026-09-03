@@ -4,9 +4,9 @@ import {
   DESK_AGENT_SYSTEM,
   parseAgentJson,
   type DeskAgentAction,
-} from "./desk-agent";
-import { llmChat, llmComplete, probeLlm } from "./llm";
-import { ROLE_BOUNDARY, withIdentity } from "./fortitudo";
+} from "./desk-agent.ts";
+import { llmChat, llmComplete, probeLlm } from "./llm.ts";
+import { ROLE_BOUNDARY, withIdentity } from "./fortitudo.ts";
 
 /** Polish a grounded meeting pack — never invent product figures. */
 export const refineMeetingPrep = createServerFn({ method: "POST" })

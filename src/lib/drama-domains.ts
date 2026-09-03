@@ -1,4 +1,4 @@
-import type { DramaDomain } from "./types";
+import type { DramaDomain } from "./types.ts";
 
 export type Criterion = {
   name: string;

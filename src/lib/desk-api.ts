@@ -57,6 +57,52 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
+
+export type PdfAction = "fill" | "annotate" | "redact" | "assemble" | "stamp" | "extract";
+
+export type PdfField = {
+  name: string;
+  kind: "text" | "checkbox" | "choice" | "signature" | "button";
+  value: string;
+  options: string[];
+  required: boolean;
+};
+
+export type PdfDescription = {
+  id: string;
+  filename: string;
+  client_id: string;
+  doc_type: string;
+  page_count: number;
+  /** No extractable text: an image, not a document. Limits what is offered. */
+  scanned: boolean;
+  pages: { page: number; text: string }[];
+  fields: PdfField[];
+  can: Record<PdfAction, boolean>;
+  /** Whether an OCR engine is installed, and what to run if not. */
+  ocr: { available: boolean; why: string };
+  why: string;
+};
+
+export type PdfResult = {
+  ok?: boolean;
+  error?: string;
+  saved_as?: string;
+  path?: string;
+  folder?: string;
+  doc_type?: string;
+  original_untouched?: string;
+  note?: string;
+  removed?: string[];
+  notes?: string[];
+  /** True when the result came from a scan: pixels blanked, page rebuilt. */
+  scanned?: boolean;
+  ocr?: boolean;
+  lowest_confidence?: number;
+  unknown_fields?: string[];
+  warning?: string;
+};
+
 export const deskApi = {
   get base() {
     return getApiBase();
@@ -96,6 +142,36 @@ export const deskApi = {
     json<{ ok: boolean; slug: string; path: string; spec: Record<string, unknown>; missing: string[];
       /** true when the model wrote the HTML; false when the gate refused it and the template ran. */
       authored: boolean; author_notes: string[] }>("/api/craft/page", { method: "POST", body: JSON.stringify(input) }),
+  /** The client as the vault holds it, including the documents filed on disk. */
+  vaultClient: (clientId: string) =>
+    json<{ id: string; name: string; status?: string;
+      documents: { id: number; filename: string; doc_type: string; content_type?: string;
+                   size?: number; created_at?: string }[] }>(`/api/clients/${encodeURIComponent(clientId)}`),
+  /** What a filed PDF is: pages, text, form fields, and what can be done to it. */
+  pdf: (docId: string | number, clientId?: string) =>
+    json<PdfDescription>(
+      `/api/pdf/${encodeURIComponent(String(docId))}` +
+        (clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""),
+    ),
+  /**
+   * Run an operation on a filed PDF. Every one of these writes a NEW file into
+   * the client's AI-drafts folder; none can modify the document it reads.
+   */
+  pdfAction: (
+    docId: string | number,
+    action: PdfAction,
+    body: Record<string, unknown>,
+    /**
+     * Whose document the caller believes this is. The backend refuses a
+     * mismatch. Always pass it from the chat agent, where the id comes out of
+     * a sentence and could be wrong or invented.
+     */
+    clientId?: string,
+  ) =>
+    json<PdfResult>(`/api/pdf/${encodeURIComponent(String(docId))}/${action}`, {
+      method: "POST",
+      body: JSON.stringify(clientId ? { ...body, client_id: clientId } : body),
+    }),
   consent: (identifier: string, action = "check") =>
     json<{ allowed: boolean; kind: string; reason: string; state: string }>("/api/consent", { method: "POST", body: JSON.stringify({ identifier, action }) }),
   fileClientDoc: (clientId: string, filename: string, contentBase64: string, docType = "Other") =>

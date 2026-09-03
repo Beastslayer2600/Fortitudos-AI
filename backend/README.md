@@ -132,3 +132,247 @@ Embeddings in the harness are a deterministic hash, not bge-m3, so the score
 depends on the desk rather than on which models happen to be installed.
 
 Add a case in `backend/eval/cases.py`. One line, and a regression names itself.
+
+## PDF workbench
+
+Open a filed client PDF from the client's Documents tab: the document on the
+left, what may be done to it on the right.
+
+```
+GET  /api/pdf/<doc_id>            pages, text, form fields, what this file supports
+POST /api/pdf/<doc_id>/fill       fill AcroForm fields
+POST /api/pdf/<doc_id>/annotate   add comments
+POST /api/pdf/<doc_id>/redact     genuinely remove text
+POST /api/pdf/<doc_id>/assemble   select / rotate pages
+POST /api/pdf/<doc_id>/stamp      overlay a banner or reference
+POST /api/pdf/<doc_id>/extract    write an editable markdown draft
+```
+
+### The original is never edited
+
+A filed client document is the signed record. Changing it in place is not
+editing, it is altering evidence — and append-only versioning *is* the
+compliance trail, not a restriction on it.
+
+So every operation writes a **new** file into `99_AI_Drafts`, typed as an AI
+draft, and the document it read stays byte-identical. This is structural, not a
+setting: `pdf_tools` takes bytes and returns bytes and never touches the
+filesystem, so there is no code path that can overwrite an original. Tests
+assert both halves, and each was verified by deliberately breaking it.
+
+### What is deliberately not offered
+
+Rewriting body prose inside a PDF. PDF is a page-description format, not a
+document with editable text, and a scan has no text at all. Anything claiming
+to do it is reflowing a guess, which on a client file is silent corruption.
+`extract` is the honest version: the text comes out into markdown you can edit,
+the PDF stays the original, and both sit in the client folder.
+
+### Redaction removes, it does not cover
+
+A black rectangle drawn over an ID number leaves the number in the file and any
+reader will copy it out. `redact` rewrites the content stream so the glyphs are
+gone — the eval asserts the text is absent from the raw bytes, not just from
+what extraction returns.
+
+### Scans
+
+A scan's content is pixels, so the two redactions are genuinely different jobs:
+
+| | how |
+|---|---|
+| Text PDF | rewrite the content stream — `redact()` |
+| Scan | blank the pixels, rebuild the page — `redact_regions()` |
+
+The `redact` action picks the right one. This matters more than it looks: OCR a
+scan, find the ID number, and run a text redaction on the literal, and it
+removes nothing at all while reporting success — there is no such string in the
+file. Worse, OCR misreading a single digit makes a literal-based redaction miss
+silently.
+
+**So OCR never decides what gets removed.** It reads the page and *suggests*
+regions. The removal is pixel-level, which holds whether or not the OCR was
+right, and the result is re-read afterwards to prove the text is gone — a
+redaction that cannot be confirmed is refused rather than returned.
+
+A suggestion is narrowed to the match rather than the whole OCR line. Blanking
+the line would take the client's name out with the ID number. There is no
+per-character geometry, so the span is estimated from character offsets and
+padded wider than the error: clipping a digit is worse than eating a
+neighbouring letter.
+
+Pixel redaction refuses a page that still has real text, rather than quietly
+flattening the text layer into an image.
+
+OCR output is labelled as a guess everywhere it surfaces, and never becomes
+citable evidence. A figure read by OCR was read from a picture of the document,
+not from the document.
+
+**Installing OCR** — deliberately not in `requirements.txt`, because it is a
+large download and the desk works without it:
+
+```bat
+pip install rapidocr-onnxruntime
+```
+
+Without it, a scan can still be annotated, stamped and reordered; the workbench
+says so and gives the install line rather than failing oddly.
+
+### The viewer
+
+The browser's own PDF renderer in an iframe, not pdf.js. pdf.js would give
+per-page coordinates for highlighting, at the cost of a worker bundle and a
+pinned version on a machine that already fights its Python wheels. The model
+does not read pixels — it reads the per-page text the backend extracts. When
+highlighting a span on the page becomes the thing you want, that is the moment
+to take the dependency.
+
+### Driving it from chat
+
+With a client open, the desk agent can act on their filed PDFs directly:
+
+> "Redact her ID number from the FICA copy"
+> "Stamp the FNA as an internal draft"
+> "Pull the advice report into an editable draft"
+
+The open document's page text goes into the agent's context, so it can answer
+questions about the document as well as act on it.
+
+**A document id is not a licence.** The workbench only ever lists the open
+client's documents, so scoping used to be implicit. The agent names a document
+from a sentence, and a wrong or invented id would otherwise reach another
+client's file — so every call from the chat carries the client, the backend
+refuses a mismatch, and the agent is only shown the active client's documents
+in the first place. Three layers, because the id now comes from a model.
+
+The refusal is worded exactly like "not found": confirming that a document
+exists but belongs to someone else is itself a leak.
+
+An ambiguous filename is refused rather than guessed. Acting on the wrong
+document of the right client is still the wrong document.
+
+## One client's file never reaches another client's answer
+
+Client documents are indexed beside the product guides as
+`client:<cid>:<file>`. `retrieval.search(client_scope=...)` filters them
+**before ranking**, alongside the as-of mask and the room exclusions:
+
+- `client_scope=None` — no client page is retrievable at all
+- `client_scope="botha"` — only `client:botha:` pages, plus the shared guides
+
+The default is `None`, so a caller that forgets scoping leaks nothing rather
+than everything.
+
+This closes a real leak. The `roa` room previously fell through to "keep every
+source", so drafting a Record of Advice for one client could retrieve and cite
+a page out of another client's filed FNA — and `span_check` would pass it,
+because the figure genuinely was in the retrieved context. It would have read
+as a properly cited fact.
+
+`/api/ask` and its `show_only` branch both pass the scope; `show_only` needs it
+more, not less, since it returns raw page text straight to the adviser.
+
+`ask._keep_source` is the second layer, and the eval tests the guard through
+`search()` rather than the filter alone — a guard that exists but is not wired
+in is exactly the failure this suite is for.
+
+## Backing up the vault
+
+The vault is one folder on one machine and FAIS wants records kept five years.
+A dead laptop currently costs the practice everything.
+
+```bat
+"Backup Vault.bat" E:\FortitudoBackup
+```
+
+or directly:
+
+```bat
+python backend\vault_backup.py --to E:\FortitudoBackup
+python backend\vault_backup.py --verify E:\FortitudoBackup
+python backend\vault_backup.py --list E:\FortitudoBackup
+python backend\vault_backup.py --restore E:\FortitudoBackup --into C:\vaultcheck
+python backend\vault_backup.py --prune E:\FortitudoBackup --keep 12
+```
+
+A backup run verifies itself and exits non-zero if it does not check out, so a
+scheduled task fails loudly rather than writing rubbish for months.
+
+### Four decisions, each aimed at a way backups fail
+
+**Snapshots, not a mirror.** A mirror propagates a deletion or a corruption —
+delete a client file by accident and the next sync destroys the only other
+copy. Snapshots are immutable, so an older one still has the file.
+
+**Content-addressed.** Every unique file is stored once under the SHA-256 of
+its own contents, so repeat runs copy only what changed, and because an
+object's name IS its checksum, silent corruption is detectable.
+
+**The database goes through SQLite, not off the disk.** Copying a live `.db`
+mid-write gives a plausible file that will not open — months later, when it is
+the only copy left. `-wal`, `-shm` and `-journal` files are skipped for the
+same reason.
+
+**Verify and restore are first-class.** `--verify` re-hashes every object any
+snapshot references, not just the newest one — an object kept only by an older
+snapshot is the copy of a file since deleted from the vault, which is exactly
+what snapshots are for, and exactly what a newest-only check would let rot. `restore` refuses a non-empty directory, so a mistyped
+command during an emergency cannot eat the vault it is recovering, and it
+re-hashes as it writes rather than producing a subtly wrong vault.
+
+### Not encrypted, deliberately
+
+Key management done badly loses an archive more reliably than having no backup
+at all. The correct answer is a destination the operating system already
+encrypts — BitLocker, FileVault, LUKS. **The archive holds client data in the
+clear: treat the destination exactly as you treat the vault.** The archive's own
+README says so, for whoever finds the drive.
+
+## Who may talk to the desk
+
+The desk was safe by accident: an `http.server` on loopback where only a local
+process could reach it. That holds until it is bound to anything else — which
+is exactly what remote access from a phone means.
+
+- a request from **loopback** is trusted, as before, so nothing about working
+  on the laptop changes
+- a request from **anywhere else** must send `Authorization: Bearer <token>`
+- if **no token is set**, a non-local request is refused outright
+
+That last line matters most. The failure to avoid is a desk exposed to the
+network and silently open because nobody set a secret. It fails closed.
+
+```bat
+set FORTITUDO_DESK_TOKEN=...
+```
+
+or start the desk on a non-loopback host once and it writes one to
+`desk-token.txt` beside the vault (never in the repo) and prints it.
+
+`/m/<slug>` stays public — a flyer QR is opened by a stranger and holds no
+client data. Nothing else is.
+
+The check runs before any route, `desk_extra`'s included, so a new route
+cannot be added outside the policy by accident. An unknown peer address is not
+treated as local: "unknown" is not "local", and treating it as such would be a
+fail-open in the one function whose job is failing closed.
+
+## Measuring the filer
+
+`sort_engine` files client documents automatically on the model's judgement.
+The `filing rails` eval suite checks everything that decides what happens
+*after* the model speaks — that an invented label cannot reach the vault, that
+low confidence parks rather than files, and that the review area is not inside
+the drop zone it rescues documents from.
+
+Accuracy itself needs the real classifier:
+
+```bat
+python eval_desk.py --live
+```
+
+That runs the classifier over labelled fixture documents and reports not just
+wrong answers but **confidently wrong** ones — a wrong answer above
+`MIN_CONFIDENCE` is the one that gets filed under the wrong person and is not
+noticed until the document is needed. That number is what says whether
+auto-filing is safe to leave on.

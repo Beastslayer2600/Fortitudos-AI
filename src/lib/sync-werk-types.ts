@@ -1,4 +1,4 @@
-import type { DocType } from "./types";
+import type { DocType } from "./types.ts";
 
 /** Default FA client root on the adviser's Windows desk. Override with FORTITUDO_CLIENTS_DIR. */
 export const DEFAULT_WERK_CLIENTS = "C:\\Werk\\Clients";

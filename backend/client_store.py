@@ -322,6 +322,22 @@ def add_generated_file(cid, filename, content, doc_type="Other"):
     )
 
 
+def add_generated_bytes(cid, filename, data, content_type="application/pdf"):
+    """Save a model-derived binary file — a filled form, a redacted copy — into
+    the AI drafts folder.
+
+    The text sibling of this function exists so a written draft can never be
+    filed as evidence. The same holds harder for a PDF: a filled or redacted
+    copy of a client document looks exactly like the original at a glance, so
+    it lands in 99_AI_Drafts, typed as a draft, and the document it came from
+    is not touched. Two files, and it is obvious which one is signed.
+    """
+    return add_document(
+        cid, filename, bytes(data), AI_DRAFT_TYPE, content_type,
+        folder=AI_DRAFT_FOLDER,
+    )
+
+
 def meeting_prep(cid):
     client = get_client(cid)
     if not client:

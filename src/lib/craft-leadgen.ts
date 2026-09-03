@@ -1,4 +1,4 @@
-import { TERRITORIES, type CraftLead } from "./craft";
+import { TERRITORIES, type CraftLead } from "./craft.ts";
 
 export type LeadScore = {
   score: number;

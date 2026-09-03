@@ -9,7 +9,7 @@ import type {
   ClientEmail,
   ClientNote,
   ClientProjection,
-} from "./types";
+} from "./types.ts";
 
 export type FnaField = {
   key: string;

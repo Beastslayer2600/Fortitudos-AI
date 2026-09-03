@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -1216,6 +1217,842 @@ class TheEvalHarnessIsRealAndRuns(unittest.TestCase):
         from eval.harness import fake_embed
         self.assertEqual(fake_embed("waiting period"), fake_embed("waiting period"))
         self.assertNotEqual(fake_embed("waiting period"), fake_embed("hearing loss"))
+
+
+
+class PdfOperationsNeverTouchTheOriginal(unittest.TestCase):
+    """The compliance guarantee, tested rather than trusted.
+
+    A filed client document is the signed record. Every operation here reads
+    bytes and returns bytes, so the code has no way to write over what it
+    opened — these tests exist to keep it that way.
+    """
+
+    def setUp(self):
+        import pdf_tools
+        self.pdf_tools = pdf_tools
+        self.src = pdf_tools.make_pdf([
+            "Mrs A Botha - Financial Needs Analysis",
+            "ID number 8001015009087. Account 1234567890.",
+            "Waiting period 3 months. Level A pays 100%.",
+        ])
+
+    def test_no_operation_returns_the_bytes_it_was_given(self):
+        t = self.pdf_tools
+        before = bytes(self.src)
+        outputs = [
+            t.annotate(self.src, [t.Note(page=1, text="check this")]),
+            t.stamp(self.src, "INTERNAL DRAFT"),
+            t.select_pages(self.src, "1"),
+            t.rotate_pages(self.src, "1", 90),
+            t.redact(self.src, patterns=["sa_id"])[0],
+        ]
+        self.assertEqual(self.src, before, "the source bytes were mutated in place")
+        for out in outputs:
+            self.assertNotEqual(out, before, "an operation returned the original unchanged")
+
+    def test_the_module_cannot_write_to_a_path_at_all(self):
+        """Structural, not a convention. pdf_tools never touches the filesystem.
+
+        Reading bytes in and handing bytes back is what makes overwriting a
+        signed record impossible rather than merely discouraged.
+        """
+        import inspect, pdf_tools, re
+        src = inspect.getsource(pdf_tools)
+        for banned in ["write_bytes(", "write_text(", "shutil.", "os.remove",
+                       "os.rename", "os.replace", "Path("]:
+            self.assertNotIn(banned, src, f"pdf_tools uses {banned}")
+        # The only open() allowed is pdfplumber reading an in-memory buffer.
+        for call in re.findall(r"[\w.]*\bopen\s*\(", src):
+            self.assertEqual(call, "pdfplumber.open(", f"unexpected open: {call}")
+
+
+class RedactionRemovesRatherThanCovers(unittest.TestCase):
+    """A black box over a number leaves the number in the file."""
+
+    def setUp(self):
+        import pdf_tools
+        self.t = pdf_tools
+        self.src = pdf_tools.make_pdf([
+            "Client Mrs Botha", "ID number 8001015009087 and account 1234567890"])
+
+    def text_of(self, data):
+        return " ".join(p.text for p in self.t.read_pages(data))
+
+    def test_an_id_number_is_gone_from_the_extracted_text(self):
+        out, removed = self.t.redact(self.src, patterns=["sa_id"])
+        self.assertIn("8001015009087", removed)
+        self.assertNotIn("8001015009087", self.text_of(out))
+
+    def test_it_is_gone_from_the_raw_bytes_too(self):
+        """The real test. Extraction can miss what a text search still finds."""
+        out, _ = self.t.redact(self.src, patterns=["sa_id"])
+        self.assertNotIn(b"8001015009087", out)
+
+    def test_the_rest_of_the_document_survives(self):
+        out, _ = self.t.redact(self.src, patterns=["sa_id"])
+        self.assertIn("Botha", self.text_of(out))
+
+    def test_a_literal_string_can_be_removed(self):
+        out, removed = self.t.redact(self.src, literals=["Mrs Botha"])
+        self.assertIn("Mrs Botha", removed)
+        self.assertNotIn(b"Mrs Botha", out)
+
+    def test_a_scan_is_refused_rather_than_pretend_redacted(self):
+        """No text to remove: reporting success would be the worst outcome."""
+        blank = self.t.make_pdf([""])
+        with self.assertRaises(self.t.NotRedactable) as caught:
+            self.t.redact(blank, patterns=["sa_id"])
+        self.assertIn("OCR", str(caught.exception))
+
+    def test_nothing_matched_removes_nothing(self):
+        out, removed = self.t.redact(self.src, literals=["not in this document"])
+        self.assertEqual(removed, [])
+
+
+class FormFillingSaysWhatItCouldNotDo(unittest.TestCase):
+    def test_unknown_field_names_are_reported_not_dropped(self):
+        """A form silently missing your field looks like a filled form."""
+        import pdf_tools
+        src = pdf_tools.make_pdf(["A page with no form fields"])
+        _out, missing = pdf_tools.fill_form(src, {"full_name": "A Botha"})
+        self.assertEqual(missing, ["full_name"])
+
+    def test_a_document_with_no_fields_reports_none(self):
+        import pdf_tools
+        self.assertEqual(pdf_tools.form_fields(pdf_tools.make_pdf(["plain"])), [])
+
+
+class PageSelectionRefusesWhatItCannotHonour(unittest.TestCase):
+    def setUp(self):
+        import pdf_tools
+        self.t = pdf_tools
+        self.src = pdf_tools.make_pdf(["one", "two", "three", "four"])
+
+    def test_a_range_is_expanded(self):
+        self.assertEqual(self.t.page_count(self.t.select_pages(self.src, "1,3-4")), 3)
+
+    def test_an_out_of_range_page_is_dropped_not_clamped(self):
+        """Clamping would put a page nobody asked for into a client pack."""
+        self.assertEqual(self.t.page_count(self.t.select_pages(self.src, "2,99")), 1)
+
+    def test_selecting_nothing_is_an_error_not_an_empty_pdf(self):
+        with self.assertRaises(ValueError):
+            self.t.select_pages(self.src, "99")
+
+    def test_duplicates_are_not_repeated(self):
+        self.assertEqual(self.t.page_count(self.t.select_pages(self.src, "2,2,2")), 1)
+
+
+class StampingLeavesTheContentReadable(unittest.TestCase):
+    def test_the_banner_is_added_and_the_page_survives(self):
+        import pdf_tools
+        src = pdf_tools.make_pdf(["Original body text"])
+        out = pdf_tools.stamp(src, "INTERNAL DRAFT - adviser review required")
+        text = " ".join(p.text for p in pdf_tools.read_pages(out))
+        self.assertIn("INTERNAL DRAFT", text)
+        self.assertIn("Original body text", text)
+
+
+class ExtractionIsTheHonestVersionOfEditing(unittest.TestCase):
+    def test_a_text_pdf_becomes_a_working_draft(self):
+        import pdf_tools
+        src = pdf_tools.make_pdf(["Waiting period is 3 months."])
+        md = pdf_tools.to_markdown(src, "Botha FNA")
+        self.assertIn("# Botha FNA", md)
+        self.assertIn("3 months", md)
+        self.assertIn("unchanged", md)
+
+    def test_a_scan_says_it_needs_ocr_rather_than_returning_nothing(self):
+        import pdf_tools
+        md = pdf_tools.to_markdown(pdf_tools.make_pdf([""]), "Scan")
+        self.assertIn("OCR", md)
+
+
+class ThePdfApiWritesOnlyToTheDraftFolder(unittest.TestCase):
+    """End to end against a real vault: read a filed PDF, write a new draft."""
+
+    def setUp(self):
+        import pdf_tools
+        self.tmp = tempfile.TemporaryDirectory()
+        self._dir, self._db = client_store.CLIENTS_DIR, client_store.CLIENT_DB
+        client_store.CLIENTS_DIR = Path(self.tmp.name) / "clients"
+        client_store.CLIENT_DB = Path(self.tmp.name) / "clients.db"
+        self.cid = client_store.create_client("Pdf Client")
+        self.original = pdf_tools.make_pdf([
+            "Signed FNA", "ID number 8001015009087"])
+        self.path = client_store.add_document(
+            self.cid, "signed_fna.pdf", self.original, "Signed FNA", "application/pdf")
+        conn = client_store.connect()
+        row = conn.execute(
+            "SELECT id FROM documents WHERE client_id = ? ORDER BY id DESC", (self.cid,)
+        ).fetchone()
+        conn.close()
+        self.doc_id = str(row["id"])
+
+    def tearDown(self):
+        client_store.CLIENTS_DIR, client_store.CLIENT_DB = self._dir, self._db
+        self.tmp.cleanup()
+
+    def sent(self, action, body):
+        import pdf_api
+        captured = {}
+
+        class Fake:
+            def send_json(self, payload, status=200):
+                captured.update(payload=payload, status=status)
+
+        handled = pdf_api.handle_post(Fake(), ["api", "pdf", self.doc_id, action], body)
+        self.assertTrue(handled, action)
+        return captured
+
+    def test_describe_reports_what_this_document_supports(self):
+        import pdf_api
+        info = pdf_api.describe(self.doc_id)
+        self.assertEqual(info["page_count"], 2)
+        self.assertFalse(info["scanned"])
+        self.assertTrue(info["can"]["redact"])
+        self.assertFalse(info["can"]["fill"], "no form fields, so fill is not offered")
+
+    def test_a_redaction_writes_a_new_file_and_leaves_the_original(self):
+        out = self.sent("redact", {"patterns": ["sa_id"]})["payload"]
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["folder"], client_store.AI_DRAFT_FOLDER)
+        self.assertEqual(out["doc_type"], client_store.AI_DRAFT_TYPE)
+        self.assertIn("8001015009087", out["removed"])
+        # The signed record is byte-identical to what was filed.
+        self.assertEqual(Path(self.path).read_bytes(), self.original)
+        self.assertIn(b"8001015009087", Path(self.path).read_bytes())
+        # The new file is a real, different, redacted document.
+        self.assertNotIn(b"8001015009087", Path(out["path"]).read_bytes())
+
+    def test_the_draft_lands_under_the_drafts_folder_on_disk(self):
+        out = self.sent("stamp", {"text": "INTERNAL DRAFT"})["payload"]
+        self.assertIn(client_store.AI_DRAFT_FOLDER, out["path"])
+
+    def test_every_action_keeps_the_original_byte_identical(self):
+        for action, body in [
+            ("stamp", {"text": "REVIEW"}),
+            ("annotate", {"notes": [{"page": 1, "text": "confirm this"}]}),
+            ("assemble", {"select": "1"}),
+            ("extract", {}),
+            ("redact", {"patterns": ["sa_id"]}),
+        ]:
+            self.sent(action, body)
+            self.assertEqual(Path(self.path).read_bytes(), self.original, action)
+
+    def test_a_redaction_that_matches_nothing_writes_no_file(self):
+        before = len(list(Path(self.path).parent.parent.rglob("*.pdf")))
+        result = self.sent("redact", {"literals": ["nothing like this"]})
+        self.assertEqual(result["status"], 400)
+        after = len(list(Path(self.path).parent.parent.rglob("*.pdf")))
+        self.assertEqual(before, after, "a file was written for a no-op redaction")
+
+    def test_a_missing_document_is_a_404_not_a_crash(self):
+        import pdf_api
+        with self.assertRaises(pdf_api.DocError):
+            pdf_api.load("999999")
+
+    def test_a_document_outside_the_vault_is_refused(self):
+        import pdf_api
+        real = client_store.get_document
+        client_store.get_document = lambda _id: {
+            "id": 1, "client_id": self.cid, "filename": "passwd",
+            "relative_path": "/etc/passwd", "doc_type": "Other",
+        }
+        try:
+            with self.assertRaises(pdf_api.DocError):
+                pdf_api.load("1")
+        finally:
+            client_store.get_document = real
+
+    def test_a_non_pdf_is_refused_with_a_reason(self):
+        import pdf_api
+        client_store.add_document(self.cid, "notes.txt", b"hello", "Other", "text/plain")
+        conn = client_store.connect()
+        row = conn.execute(
+            "SELECT id FROM documents WHERE client_id = ? ORDER BY id DESC", (self.cid,)
+        ).fetchone()
+        conn.close()
+        with self.assertRaises(pdf_api.DocError) as caught:
+            pdf_api.load(str(row["id"]))
+        self.assertIn("not a PDF", str(caught.exception))
+
+
+
+class ADocumentIdIsNotALicence(unittest.TestCase):
+    """Once a chat message can name a document id, the id alone is not enough.
+
+    The workbench only ever lists the open client's documents, so scoping was
+    implicit. The agent names a document from a sentence, and a wrong or
+    invented id would otherwise reach into another client's file.
+    """
+
+    def setUp(self):
+        import pdf_tools
+        self.tmp = tempfile.TemporaryDirectory()
+        self._dir, self._db = client_store.CLIENTS_DIR, client_store.CLIENT_DB
+        client_store.CLIENTS_DIR = Path(self.tmp.name) / "clients"
+        client_store.CLIENT_DB = Path(self.tmp.name) / "clients.db"
+        self.a = client_store.create_client("Client Alpha")
+        self.b = client_store.create_client("Client Beta")
+        pdf = pdf_tools.make_pdf(["ID number 8001015009087"])
+        client_store.add_document(self.a, "alpha.pdf", pdf, "Signed FNA", "application/pdf")
+        conn = client_store.connect()
+        self.doc_id = str(conn.execute(
+            "SELECT id FROM documents WHERE client_id = ? ORDER BY id DESC", (self.a,)
+        ).fetchone()["id"])
+        conn.close()
+
+    def tearDown(self):
+        client_store.CLIENTS_DIR, client_store.CLIENT_DB = self._dir, self._db
+        self.tmp.cleanup()
+
+    def test_the_owning_client_may_open_it(self):
+        import pdf_api
+        doc, data = pdf_api.load(self.doc_id, self.a)
+        self.assertTrue(data)
+        self.assertEqual(doc["client_id"], self.a)
+
+    def test_another_client_may_not(self):
+        import pdf_api
+        with self.assertRaises(pdf_api.WrongClient):
+            pdf_api.load(self.doc_id, self.b)
+
+    def test_the_refusal_does_not_confirm_the_document_exists(self):
+        """Saying "that belongs to someone else" is itself a leak."""
+        import pdf_api
+        try:
+            pdf_api.load(self.doc_id, self.b)
+        except pdf_api.DocError as exc:
+            self.assertEqual(str(exc), "Document not found.")
+
+    def test_no_scope_still_works_for_the_workbench(self):
+        import pdf_api
+        self.assertTrue(pdf_api.load(self.doc_id)[1])
+
+    def test_a_scoped_post_is_refused_for_the_wrong_client(self):
+        import pdf_api
+        captured = {}
+
+        class Fake:
+            def send_json(self, payload, status=200):
+                captured.update(payload=payload, status=status)
+
+        pdf_api.handle_post(Fake(), ["api", "pdf", self.doc_id, "extract"],
+                            {"client_id": self.b})
+        self.assertEqual(captured["status"], 404)
+
+    def test_a_scoped_post_works_for_the_right_client(self):
+        import pdf_api
+        captured = {}
+
+        class Fake:
+            def send_json(self, payload, status=200):
+                captured.update(payload=payload, status=status)
+
+        pdf_api.handle_post(Fake(), ["api", "pdf", self.doc_id, "extract"],
+                            {"client_id": self.a})
+        self.assertEqual(captured["status"], 200)
+        self.assertTrue(captured["payload"]["ok"])
+
+    def test_the_get_scope_is_read_from_the_query_string(self):
+        """The handler only splits the path, so this has to be parsed, not assumed."""
+        import pdf_api
+
+        class H:
+            path = f"/api/pdf/{self.doc_id}?client_id={self.a}"
+
+        self.assertEqual(pdf_api._client_scope(H()), self.a)
+        self.assertEqual(pdf_api._client_scope(type("N", (), {"path": "/api/pdf/1"})()), "")
+
+
+
+class OneClientsFileNeverReachesAnothersAnswer(unittest.TestCase):
+    """The leak this closes: an RoA for one client citing another's file.
+
+    Client documents are indexed beside the product guides. The roa room used
+    to fall through to "keep everything", so retrieval could surface Mr
+    Naidoo's FNA while drafting Mrs Botha's Record of Advice — and span_check
+    would pass it, because the figure really is in the retrieved context. It
+    would read as a properly cited fact.
+    """
+
+    def rows(self):
+        return [
+            (1, "guide:lifestyle_protector", 12, "Level A pays 100%.", 0),
+            (2, "client:botha:fna.pdf", 1, "Botha net salary R55 000.", 0),
+            (3, "client:naidoo:fna.pdf", 1, "Naidoo net salary R92 000.", 0),
+        ]
+
+    def scope(self, client_scope):
+        import numpy as np
+        from retrieval import _scope_clients
+        rows = self.rows()
+        kept, _ = _scope_clients(rows, np.eye(len(rows), dtype="float32"), client_scope)
+        return [r[1] for r in kept]
+
+    def test_no_client_attached_means_no_client_pages(self):
+        self.assertEqual(self.scope(None), ["guide:lifestyle_protector"])
+
+    def test_a_client_sees_only_their_own_pages(self):
+        self.assertEqual(
+            self.scope("botha"), ["guide:lifestyle_protector", "client:botha:fna.pdf"])
+
+    def test_the_other_client_is_not_reachable(self):
+        self.assertNotIn("client:naidoo:fna.pdf", self.scope("botha"))
+
+    def test_a_prefix_of_another_client_id_does_not_match(self):
+        """`client:bot:` must not open `client:botha:` — the colon is the fence."""
+        import numpy as np
+        from retrieval import _scope_clients
+        rows = [(1, "client:botha:fna.pdf", 1, "x", 0)]
+        kept, _ = _scope_clients(rows, np.eye(1, dtype="float32"), "bot")
+        self.assertEqual(kept, [])
+
+    def test_the_guard_lives_before_ranking(self):
+        """Filtering after scoring would still let a page take a top-k slot."""
+        import inspect, retrieval
+        src = inspect.getsource(retrieval.search)
+        self.assertLess(src.index("_scope_clients"), src.index("dense_scores"))
+
+    def test_the_default_is_the_safe_one(self):
+        """A caller that forgets scoping must leak nothing, not everything."""
+        import inspect, retrieval
+        params = inspect.signature(retrieval.search).parameters
+        self.assertIsNone(params["client_scope"].default)
+
+    def test_the_roa_room_no_longer_keeps_every_client_source(self):
+        from ask import _keep_source
+        self.assertTrue(_keep_source("roa", "client:botha:fna.pdf"))
+        self.assertFalse(_keep_source("fa", "client:botha:fna.pdf"))
+        for room in ("craft", "voice", "drama", "learn"):
+            self.assertFalse(_keep_source(room, "client:botha:fna.pdf"), room)
+
+    def test_both_ask_and_show_only_pass_a_scope(self):
+        """show_only returns raw page text, so it needs this more, not less."""
+        import inspect, app, ask
+        self.assertIn("client_scope=", inspect.getsource(app.Handler))
+        self.assertIn("client_id=client_id", inspect.getsource(app.Handler))
+        self.assertIn("client_scope=scope", inspect.getsource(ask.answer))
+
+    def test_answer_defaults_to_no_client(self):
+        import inspect, ask
+        self.assertEqual(inspect.signature(ask.answer).parameters["client_id"].default, "")
+
+
+
+def _ocr_ready():
+    import pdf_tools
+    return pdf_tools.ocr_available()[0]
+
+
+def _make_scan(text):
+    """A real scan: rendered to pixels, with no text layer at all."""
+    import pdf_tools
+    src = pdf_tools.make_pdf([text])
+    return pdf_tools._jpeg_page_pdf(pdf_tools.render_page(src, 1, 2.0), 595, 842)
+
+
+class AScanIsPixelsNotText(unittest.TestCase):
+    """Redacting a scan by rewriting text would do nothing and report success."""
+
+    def test_a_rebuilt_image_page_has_no_text_layer(self):
+        import pdf_tools
+        if not _ocr_ready():
+            self.skipTest("no OCR engine installed")
+        self.assertTrue(pdf_tools.is_scanned(_make_scan("ID number 8001015009087")))
+
+    def test_text_redaction_is_refused_on_a_scan(self):
+        """The old path would have silently matched nothing and 'succeeded'."""
+        import pdf_tools
+        if not _ocr_ready():
+            self.skipTest("no OCR engine installed")
+        with self.assertRaises(pdf_tools.NotRedactable):
+            pdf_tools.redact(_make_scan("ID number 8001015009087"), patterns=["sa_id"])
+
+    def test_pixel_redaction_refuses_a_page_that_still_has_text(self):
+        """Rebuilding a text page as an image would throw the text layer away."""
+        import pdf_tools
+        src = pdf_tools.make_pdf(["Real text on a real text page"])
+        region = pdf_tools.Region(page=1, box=(0, 0, 100, 100))
+        with self.assertRaises(pdf_tools.NotRedactable) as caught:
+            pdf_tools.redact_regions(src, [region])
+        self.assertIn("text layer", str(caught.exception))
+
+
+class OcrReadsButNeverDecides(unittest.TestCase):
+    """OCR finds where the number is. Pixels are what actually get removed."""
+
+    def setUp(self):
+        if not _ocr_ready():
+            self.skipTest("no OCR engine installed")
+        self.scan = _make_scan("ID number 8001015009087 and name Botha")
+
+    def test_it_reads_a_scan(self):
+        import pdf_tools
+        text = " ".join(p.text for p in pdf_tools.ocr_pages(self.scan))
+        self.assertIn("8001015009087", text)
+
+    def test_a_suggestion_is_one_region_per_match_not_the_whole_line(self):
+        """Blanking the line would take the client's name with the ID number."""
+        import pdf_tools
+        regions = pdf_tools.suggest_redactions(self.scan, patterns=["sa_id"])
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(regions[0].label, "8001015009087")
+
+    def test_the_number_is_gone_and_the_name_survives(self):
+        import pdf_tools
+        regions = pdf_tools.suggest_redactions(self.scan, patterns=["sa_id"])
+        out, _notes = pdf_tools.redact_regions(self.scan, regions)
+        after = " ".join(p.text for p in pdf_tools.ocr_pages(out))
+        self.assertNotIn("8001015009087", after)
+        self.assertIn("Botha", after)
+
+    def test_the_result_is_re_read_to_prove_it(self):
+        import pdf_tools
+        regions = pdf_tools.suggest_redactions(self.scan, patterns=["sa_id"])
+        _out, notes = pdf_tools.redact_regions(self.scan, regions)
+        self.assertTrue(any("verified" in n for n in notes), notes)
+
+    def test_a_redaction_that_did_not_work_is_refused_not_returned(self):
+        """A zero-size box removes nothing; returning it would be the lie."""
+        import pdf_tools
+        regions = pdf_tools.suggest_redactions(self.scan, patterns=["sa_id"])
+        useless = [pdf_tools.Region(r.page, (0, 0, 0, 0), r.scale, r.label)
+                   for r in regions]
+        with self.assertRaises(pdf_tools.NotRedactable) as caught:
+            pdf_tools.redact_regions(self.scan, useless, pad=0)
+        self.assertIn("still readable", str(caught.exception))
+
+    def test_ocr_output_is_labelled_as_a_guess(self):
+        import pdf_tools
+        md = pdf_tools.ocr_markdown(pdf_tools.ocr_pages(self.scan), "FICA copy")
+        self.assertIn("OCR", md)
+        self.assertIn("guess at a picture", md)
+        self.assertIn("Check each one", md)
+
+
+class TheNarrowBoxKeepsWhatItShould(unittest.TestCase):
+    """Pure geometry — runs with or without an OCR engine."""
+
+    def test_it_covers_the_match_and_not_the_whole_line(self):
+        from pdf_tools import _narrow_box
+        line = "ID number 8001015009087 and name Botha"
+        box = (0.0, 0.0, 380.0, 20.0)
+        narrow = _narrow_box(box, line, "8001015009087")
+        self.assertGreater(narrow[0], box[0])
+        self.assertLess(narrow[2], box[2])
+
+    def test_it_pads_wider_than_the_estimate(self):
+        """Clipping a digit is worse than eating a neighbouring letter."""
+        from pdf_tools import _narrow_box
+        line = "abc 123456 def"
+        exact_start = 380.0 * (line.index("123456") / len(line))
+        narrow = _narrow_box((0.0, 0.0, 380.0, 20.0), line, "123456")
+        self.assertLess(narrow[0], exact_start)
+
+    def test_an_absent_match_leaves_the_box_alone(self):
+        from pdf_tools import _narrow_box
+        box = (1.0, 2.0, 3.0, 4.0)
+        self.assertEqual(_narrow_box(box, "abc", "zzz"), box)
+
+
+class MissingOcrSaysSoRatherThanReturningNothing(unittest.TestCase):
+    def test_the_reason_names_the_install_command(self):
+        import pdf_tools
+        real = pdf_tools.ocr_available
+        pdf_tools.ocr_available = lambda: (False, "OCR needs an engine. Install it with: pip install rapidocr-onnxruntime")
+        try:
+            with self.assertRaises(pdf_tools.OcrUnavailable) as caught:
+                pdf_tools.ocr_pages(b"%PDF-1.4")
+            self.assertIn("pip install", str(caught.exception))
+        finally:
+            pdf_tools.ocr_available = real
+
+    def test_describe_reports_whether_ocr_is_available(self):
+        import inspect, pdf_api
+        src = inspect.getsource(pdf_api.describe)
+        self.assertIn("ocr_available", src)
+        self.assertIn('"ocr"', src)
+
+    def test_a_scan_offers_redaction_only_when_ocr_is_present(self):
+        import inspect, pdf_api
+        src = inspect.getsource(pdf_api.describe)
+        self.assertIn("(not scanned) or ocr_ok", src)
+
+
+
+class TheBackupCanActuallyBeRestored(unittest.TestCase):
+    """A backup nobody has restored is a hypothesis, so the tests restore."""
+
+    def setUp(self):
+        import vault_backup
+        self.vb = vault_backup
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.vault = self.root / "vault"
+        self.arch = self.root / "archive"
+        (self.vault / "clients" / "botha" / "02_FNA").mkdir(parents=True)
+        (self.vault / "clients" / "botha" / "02_FNA" / "fna.pdf").write_bytes(
+            b"%PDF-1.4 signed fna")
+        (self.vault / "clients" / "botha" / "01_FICA").mkdir(parents=True)
+        (self.vault / "clients" / "botha" / "01_FICA" / "id.jpg").write_bytes(b"\xff\xd8jpeg")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def live_db(self):
+        """An open database, the way it is when the desk is running."""
+        conn = sqlite3.connect(self.vault / "clients.db")
+        conn.execute("CREATE TABLE clients (id TEXT, name TEXT)")
+        conn.execute("INSERT INTO clients VALUES ('botha','Mrs Botha')")
+        conn.commit()
+        return conn
+
+    def test_a_restore_returns_the_same_bytes(self):
+        self.vb.back_up(self.vault, self.arch)
+        out = self.root / "restored"
+        self.vb.restore(self.arch, out)
+        self.assertEqual(
+            (out / "clients" / "botha" / "02_FNA" / "fna.pdf").read_bytes(),
+            b"%PDF-1.4 signed fna")
+
+    def test_a_live_database_is_copied_consistently_and_opens(self):
+        """Copying an open .db off disk can yield a file that will not open."""
+        conn = self.live_db()
+        try:
+            self.vb.back_up(self.vault, self.arch)
+        finally:
+            conn.close()
+        out = self.root / "restored"
+        self.vb.restore(self.arch, out)
+        restored = sqlite3.connect(out / "clients.db")
+        try:
+            self.assertEqual(
+                restored.execute("SELECT name FROM clients").fetchall(),
+                [("Mrs Botha",)])
+        finally:
+            restored.close()
+
+    def test_the_second_run_stores_only_what_changed(self):
+        """Content addressing is what makes this cheap enough to actually run."""
+        self.vb.back_up(self.vault, self.arch)
+        (self.vault / "clients" / "botha" / "new.txt").write_text("new")
+        snap = self.vb.back_up(self.vault, self.arch)
+        self.assertTrue(any("1 newly stored" in n for n in snap.notes), snap.notes)
+
+    def test_a_deleted_file_survives_in_an_older_snapshot(self):
+        """A mirror would faithfully destroy the only other copy."""
+        first = self.vb.back_up(self.vault, self.arch).id
+        (self.vault / "clients" / "botha" / "02_FNA" / "fna.pdf").unlink()
+        self.vb.back_up(self.vault, self.arch)
+        out = self.root / "old"
+        self.vb.restore(self.arch, out, snapshot_id=first)
+        self.assertTrue((out / "clients" / "botha" / "02_FNA" / "fna.pdf").exists())
+
+    def test_two_backups_in_one_second_are_two_snapshots(self):
+        """They used to share a filename, and the second silently replaced it."""
+        ids = {self.vb.back_up(self.vault, self.arch).id for _ in range(3)}
+        self.assertEqual(len(ids), 3)
+        self.assertEqual(len(self.vb.snapshots(self.arch)), 3)
+
+    def test_the_newest_snapshot_is_actually_the_newest(self):
+        """Sorted as strings, "Z-2" lands before "Z" — the newest read as oldest."""
+        (self.vault / "v.txt").write_text("one")
+        self.vb.back_up(self.vault, self.arch)
+        (self.vault / "v.txt").write_text("two")
+        self.vb.back_up(self.vault, self.arch)
+        (self.vault / "v.txt").write_text("three")
+        last = self.vb.back_up(self.vault, self.arch).id
+        self.assertEqual(self.vb.snapshots(self.arch)[-1].id, last)
+        out = self.root / "newest"
+        self.vb.restore(self.arch, out)          # no id given = newest
+        self.assertEqual((out / "v.txt").read_text(), "three")
+
+    def test_verify_catches_a_corrupted_object(self):
+        """A size-and-date check says everything is fine until it matters."""
+        self.vb.back_up(self.vault, self.arch)
+        obj = next(p for p in (self.arch / "objects").rglob("*") if p.is_file())
+        obj.write_bytes(b"rot")
+        verdict = self.vb.verify(self.arch)
+        self.assertFalse(verdict.ok)
+        self.assertTrue(verdict.corrupt)
+
+    def test_restore_refuses_a_corrupted_object_rather_than_writing_it(self):
+        self.vb.back_up(self.vault, self.arch)
+        obj = next(p for p in (self.arch / "objects").rglob("*") if p.is_file())
+        obj.write_bytes(b"rot")
+        with self.assertRaises(self.vb.BackupError) as caught:
+            self.vb.restore(self.arch, self.root / "bad")
+        self.assertIn("corrupt", str(caught.exception))
+
+    def test_verifying_the_newest_snapshot_is_not_verifying_the_archive(self):
+        """An object kept only by an older snapshot can rot unnoticed.
+
+        That older copy is the whole reason snapshots exist, so the archive
+        check has to reach it.
+        """
+        first = self.vb.back_up(self.vault, self.arch).id
+        (self.vault / "clients" / "botha" / "02_FNA" / "fna.pdf").unlink()
+        (self.vault / "clients" / "botha" / "01_FICA" / "id.jpg").unlink()
+        self.vb.back_up(self.vault, self.arch)
+
+        old_only = {e.digest for e in self.vb.load_snapshot(self.arch, first).entries}
+        newest = {e.digest for e in self.vb.load_snapshot(self.arch).entries}
+        target = sorted(old_only - newest)[0]
+        self.vb._object_path(self.arch, target).write_bytes(b"rot")
+
+        self.assertTrue(self.vb.verify(self.arch).ok,
+                        "the newest snapshot should not see this")
+        self.assertFalse(self.vb.verify_archive(self.arch).ok,
+                         "the archive check missed a rotted object")
+
+    def test_verify_reports_a_missing_object(self):
+        self.vb.back_up(self.vault, self.arch)
+        next(p for p in (self.arch / "objects").rglob("*") if p.is_file()).unlink()
+        self.assertTrue(self.vb.verify(self.arch).missing)
+
+    def test_an_archive_inside_the_vault_is_refused(self):
+        """It dies with the vault, and each run would back up the last one."""
+        with self.assertRaises(self.vb.BackupError) as caught:
+            self.vb.back_up(self.vault, self.vault / "backups")
+        self.assertIn("outside the vault", str(caught.exception))
+
+    def test_restore_refuses_a_directory_that_is_not_empty(self):
+        """A mistyped restore during an emergency must not eat the live vault."""
+        self.vb.back_up(self.vault, self.arch)
+        busy = self.root / "busy"
+        busy.mkdir()
+        (busy / "something.txt").write_text("do not lose me")
+        with self.assertRaises(self.vb.BackupError):
+            self.vb.restore(self.arch, busy)
+        self.assertEqual((busy / "something.txt").read_text(), "do not lose me")
+
+    def test_journal_files_are_not_backed_up(self):
+        """A journal restored beside an already-consistent db is inconsistent."""
+        (self.vault / "clients.db-wal").write_bytes(b"journal")
+        snap = self.vb.back_up(self.vault, self.arch)
+        self.assertNotIn("clients.db-wal", [e.path for e in snap.entries])
+
+    def test_prune_keeps_the_newest_and_leaves_them_restorable(self):
+        for i in range(5):
+            (self.vault / "v.txt").write_text(f"v{i}")
+            self.vb.back_up(self.vault, self.arch)
+        self.vb.prune(self.arch, keep=2)
+        left = self.vb.snapshots(self.arch)
+        self.assertEqual(len(left), 2)
+        self.assertTrue(self.vb.verify(self.arch, left[0].id).ok)
+        self.assertTrue(self.vb.verify(self.arch, left[-1].id).ok)
+
+    def test_the_archive_explains_itself_and_warns_about_the_contents(self):
+        """Whoever finds this drive needs to know what is on it."""
+        self.vb.back_up(self.vault, self.arch)
+        raw = (self.arch / "README.md").read_text(encoding="utf-8")
+        # The warning matters; where it line-wraps does not.
+        readme = re.sub(r"\s+", " ", raw)
+        self.assertIn("client personal information in the clear", readme)
+        self.assertIn("encrypted volume", readme)
+        self.assertIn("--restore", readme)
+
+
+
+class TheDeskIsOpenLocallyAndClosedRemotely(unittest.TestCase):
+    """Safe by accident until it is bound to the network. Now safe on purpose."""
+
+    class Headers:
+        def __init__(self, value=None):
+            self.value = value
+
+        def get(self, _key):
+            return self.value
+
+    def setUp(self):
+        import desk_auth
+        self.auth = desk_auth
+        self._env = dict(os.environ)
+        os.environ.pop("FORTITUDO_DESK_TOKEN", None)
+        os.environ["FORTITUDO_TOKEN_FILE"] = tempfile.mktemp()
+        self._file = desk_auth.TOKEN_FILE
+        desk_auth.TOKEN_FILE = Path(os.environ["FORTITUDO_TOKEN_FILE"])
+
+    def tearDown(self):
+        self.auth.TOKEN_FILE = self._file
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def test_loopback_is_trusted_so_nothing_local_changes(self):
+        for peer in ("127.0.0.1", "::1", "localhost"):
+            ok, _ = self.auth.check(peer, ["api", "clients"], self.Headers())
+            self.assertTrue(ok, peer)
+
+    def test_an_unknown_peer_is_not_treated_as_local(self):
+        """"Unknown" is not "local". That would be a fail-open."""
+        for peer in ("", "   ", None):
+            self.assertFalse(self.auth.is_loopback(peer or ""))
+            ok, _ = self.auth.check(peer or "", ["api", "clients"], self.Headers())
+            self.assertFalse(ok, repr(peer))
+
+    def test_a_hostname_that_merely_looks_local_is_refused(self):
+        self.assertFalse(self.auth.is_loopback("127.0.0.1.evil.com"))
+        self.assertFalse(self.auth.is_loopback("localhost.attacker.net"))
+
+    def test_a_remote_request_with_no_token_set_is_refused_not_allowed(self):
+        """The failure to avoid: exposed to the network and silently open."""
+        ok, why = self.auth.check("192.168.1.50", ["api", "clients"], self.Headers())
+        self.assertFalse(ok)
+        self.assertIn("no token is set", why)
+        self.assertIn("FORTITUDO_DESK_TOKEN", why)
+
+    def test_a_remote_request_with_the_right_token_is_allowed(self):
+        os.environ["FORTITUDO_DESK_TOKEN"] = "s3cret-token"
+        ok, _ = self.auth.check(
+            "192.168.1.50", ["api", "clients"], self.Headers("Bearer s3cret-token"))
+        self.assertTrue(ok)
+
+    def test_a_wrong_or_missing_token_is_refused(self):
+        os.environ["FORTITUDO_DESK_TOKEN"] = "s3cret-token"
+        for header in (None, "", "Bearer wrong", "s3cret-token", "Basic s3cret-token"):
+            ok, _ = self.auth.check(
+                "192.168.1.50", ["api", "clients"], self.Headers(header))
+            self.assertFalse(ok, repr(header))
+
+    def test_the_comparison_is_constant_time(self):
+        """A fast rejection leaks how much of the token was right."""
+        import inspect
+        src = inspect.getsource(self.auth.check)
+        self.assertIn("compare_digest", src)
+        self.assertNotIn("offered == token", src)
+
+    def test_public_mock_pages_stay_public(self):
+        """A flyer QR is opened by a stranger, and holds no client data."""
+        ok, _ = self.auth.check("41.20.9.8", ["m", "joe-plumbing"], self.Headers())
+        self.assertTrue(ok)
+
+    def test_nothing_else_is_public(self):
+        for parts in (["api", "clients"], ["api", "ask"], ["api", "pdf", "1"],
+                      ["api", "documents", "1"], []):
+            self.assertFalse(self.auth.is_public_path(parts), parts)
+
+    def test_a_token_is_minted_only_when_asked(self):
+        self.assertEqual(self.auth.desk_token(), "")
+        self.assertEqual(self.auth.ensure_token(create=False), "")
+        minted = self.auth.ensure_token(create=True)
+        self.assertTrue(len(minted) > 30)
+        self.assertEqual(self.auth.desk_token(), minted)
+
+    def test_the_token_lives_beside_the_vault_not_in_the_repo(self):
+        import inspect, desk_auth
+        src = inspect.getsource(desk_auth)
+        self.assertIn("DATA_ROOT", src)
+
+    def test_every_route_passes_the_guard_before_running(self):
+        """Including desk_extra's, so a new route cannot slip outside policy."""
+        import inspect, app
+        for method in (app.Handler.do_GET, app.Handler.do_POST):
+            src = inspect.getsource(method)
+            self.assertLess(src.index("_authorised"), src.index("desk_extra"),
+                            f"{method.__name__} runs a route before authorising")
 
 
 

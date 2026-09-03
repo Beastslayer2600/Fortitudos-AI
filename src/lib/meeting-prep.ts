@@ -5,7 +5,7 @@ import type {
   ClientNote,
   ClientProjection,
   DocType,
-} from "./types";
+} from "./types.ts";
 
 export type ChecklistItem = {
   item: string;

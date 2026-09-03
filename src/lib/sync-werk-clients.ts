@@ -4,7 +4,7 @@ import {
   type DiskClient,
   type DiskDocument,
   type SyncWerkResult,
-} from "./sync-werk-types";
+} from "./sync-werk-types.ts";
 
 export type { DiskClient, DiskDocument, SyncWerkResult };
 export { DEFAULT_WERK_CLIENTS };
