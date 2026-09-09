@@ -18,3 +18,12 @@ backend/docs/*.pdf
 backend/docs/learn/shots/
 # ...and the model's reading of a photo discloses the same thing in words.
 backend/docs/learn/sight/
+
+# Client vault and anything that identifies a client. The desk keeps these
+# outside the repo by default (FORTITUDO_DATA_ROOT), but a local override can
+# point them back inside it, and one commit is all it takes.
+backend/docs/clients/
+FortitudoData/
+desk-token.txt
+*.db
+*.sqlite
