@@ -2056,5 +2056,175 @@ class TheDeskIsOpenLocallyAndClosedRemotely(unittest.TestCase):
 
 
 
+class TheDeskKeepsItsOwnEvidence(unittest.TestCase):
+    """The A1 log, computed rather than hand-kept — and the audit trail.
+
+    An answer is a thing that happened. The record of it is written at the
+    time, because the index answers "what applied on 3 March" from how it
+    stands today, and only a contemporaneous record answers "what would this
+    desk have told me on 3 March".
+    """
+
+    def setUp(self):
+        import answer_log
+        self.log = answer_log
+        self.tmp = tempfile.TemporaryDirectory()
+        self._db = answer_log.LOG_DB
+        answer_log.LOG_DB = Path(self.tmp.name) / "answers.db"
+
+    def tearDown(self):
+        self.log.LOG_DB = self._db
+        self.tmp.cleanup()
+
+    def rows(self, *sources):
+        return [((i, src, page, "text", f"hash{i}"), 0.9)
+                for i, (src, page) in enumerate(sources)]
+
+    def test_an_answer_is_recorded_with_what_it_was_built_from(self):
+        rid = self.log.record(question="waiting period?", answer="3 months.",
+                              room="fa", results=self.rows(("guide:lp", 13)))
+        row = self.log.get(rid)
+        self.assertEqual(row["question"], "waiting period?")
+        self.assertEqual(row["sources"][0]["source"], "guide:lp")
+        self.assertEqual(row["sources"][0]["page"], 13)
+
+    def test_the_retrieval_snapshot_is_stored_not_merely_computed(self):
+        """versioning.snapshot_id existed but was never called by anything."""
+        rid = self.log.record(question="q", answer="a", room="fa",
+                              results=self.rows(("guide:lp", 13)))
+        self.assertTrue(self.log.get(rid)["snapshot"])
+
+    def test_two_different_retrievals_get_different_snapshots(self):
+        one = self.log.record(question="q", answer="a", room="fa",
+                              results=self.rows(("guide:lp", 13)))
+        two = self.log.record(question="q", answer="a", room="fa",
+                              results=self.rows(("guide:lp_v2", 13)))
+        self.assertNotEqual(self.log.get(one)["snapshot"], self.log.get(two)["snapshot"])
+
+    def test_the_page_hash_is_kept_so_a_later_edit_is_detectable(self):
+        """If the guide is re-ingested with new text, the hash stops matching."""
+        rid = self.log.record(question="q", answer="a", room="fa",
+                              results=self.rows(("guide:lp", 13)))
+        self.assertTrue(self.log.get(rid)["sources"][0]["hash"])
+
+    def test_the_desks_own_flags_are_counted(self):
+        self.log.record(question="q", answer="Premium [MISSING]\n\n[SPAN-CHECK] Replaced",
+                        room="fa", results=self.rows(("guide:lp", 1)))
+        self.log.record(question="q", answer="3 months\n\n[VERSIONS] more than one version",
+                        room="fa", results=self.rows(("guide:lp", 1)))
+        rep = self.log.report(7)
+        self.assertEqual(rep.span_flagged, 1)
+        self.assertEqual(rep.version_clash, 1)
+
+    def test_marking_an_answer_never_edits_what_it_said(self):
+        """The verdict is added beside the answer, not over it."""
+        rid = self.log.record(question="q", answer="the original answer",
+                              room="fa", results=self.rows(("guide:lp", 1)))
+        self.log.mark(rid, "wrong", "premium was 1250")
+        row = self.log.get(rid)
+        self.assertEqual(row["answer"], "the original answer")
+        self.assertEqual(row["verdict"], "wrong")
+        self.assertEqual(row["verdict_note"], "premium was 1250")
+
+    def test_an_invented_verdict_is_refused(self):
+        rid = self.log.record(question="q", answer="a", room="fa", results=[])
+        with self.assertRaises(ValueError):
+            self.log.mark(rid, "brilliant")
+
+    def test_an_unmeasured_wrong_rate_is_none_not_zero(self):
+        """Reporting 0% is how a tool looks perfect until someone uses it."""
+        self.log.record(question="q", answer="a", room="fa", results=[])
+        self.assertIsNone(self.log.report(7).wrong_rate)
+        self.assertIn("an unmeasured rate is not zero", self.log.render(self.log.report(7)))
+
+    def test_the_wrong_rate_counts_only_what_was_judged(self):
+        good = self.log.record(question="q", answer="a", room="fa", results=[])
+        bad = self.log.record(question="q", answer="a", room="fa", results=[])
+        self.log.record(question="q", answer="a", room="fa", results=[])  # unjudged
+        self.log.mark(good, "good")
+        self.log.mark(bad, "wrong")
+        rep = self.log.report(7)
+        self.assertEqual(rep.wrong_rate, 0.5)
+        self.assertEqual(rep.unmarked, 1)
+
+    def test_an_as_of_question_is_counted_separately(self):
+        """The thing the normal systems cannot answer — the Liberty pitch."""
+        self.log.record(question="what applied in March 2024?", answer="a",
+                        room="fa", results=[], as_of="2024-03-01")
+        self.log.record(question="what applies now?", answer="a", room="fa", results=[])
+        self.assertEqual(self.log.report(7).as_of_questions, 1)
+
+    def test_time_saved_nets_off_what_the_answer_cost(self):
+        self.log.record(question="q", answer="a", room="fa", results=[], seconds=60)
+        rep = self.log.report(7)
+        self.assertAlmostEqual(rep.hours_saved, (self.log.MINUTES_BY_HAND * 60 - 60) / 3600, places=3)
+
+    def test_the_assumption_behind_the_number_is_shown_not_buried(self):
+        """Someone will ask where the hours came from."""
+        self.log.record(question="q", answer="a", room="fa", results=[])
+        self.assertIn("min/question by hand", self.log.render(self.log.report(7)))
+
+    def test_logging_never_breaks_an_answer(self):
+        """A desk that cannot answer because its logbook is full is worse.
+
+        The log is pointed at a path whose parent is a regular file, so the
+        mkdir in connect() cannot rescue it. A missing directory is not enough
+        of a test: connect() creates it, and running as root it succeeds.
+        """
+        blocker = Path(self.tmp.name) / "not-a-directory"
+        blocker.write_text("i am a file", encoding="utf-8")
+        self.log.LOG_DB = blocker / "answers.db"
+        self.assertEqual(self.log.record(question="q", answer="a", room="fa", results=[]), 0)
+
+    def test_answer_records_through_the_real_path(self):
+        """ask.answer writes the log itself, so nothing has to remember to."""
+        import ask, inspect
+        src = inspect.getsource(ask.answer)
+        self.assertIn("from answer_log import record", src)
+        self.assertLess(src.index("draft_banner"), src.index("record("),
+                        "the log is written before the answer is final")
+
+
+class TheIndexKnowsWhenItLearnedAPage(unittest.TestCase):
+    """Valid time says when terms applied. Transaction time says when we knew.
+
+    Without the second axis the index can say what applied on a date, but not
+    what it would have told you on that date — and once a guide is re-ingested
+    those are different answers.
+    """
+
+    def index(self):
+        import re, store
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(
+            re.search(r'SCHEMA\s*=\s*"""(.*?)"""',
+                      Path(store.__file__).read_text(encoding="utf-8"), re.S).group(1))
+        return conn
+
+    def test_a_page_records_when_it_was_ingested(self):
+        import numpy as np, store
+        conn = self.index()
+        store.add_page(conn, "guide:lp", 1, "text", np.zeros(4, dtype="float32"))
+        self.assertTrue(conn.execute("SELECT ingested_at FROM pages").fetchone()[0])
+
+    def test_that_is_a_different_axis_from_when_the_terms_applied(self):
+        import numpy as np, store
+        conn = self.index()
+        store.add_page(conn, "guide:lp", 1, "text", np.zeros(4, dtype="float32"),
+                       effective_from="2024-01-01")
+        valid, learned = conn.execute(
+            "SELECT effective_from, ingested_at FROM pages").fetchone()
+        self.assertEqual(valid, "2024-01-01")
+        self.assertNotEqual(valid, learned[:10])
+
+    def test_the_column_migrates_onto_an_existing_index(self):
+        """An index built before this change must not need rebuilding."""
+        import store, inspect
+        self.assertIn("ingested_at", inspect.getsource(store._migrate)
+                      if hasattr(store, "_migrate") else
+                      Path(store.__file__).read_text(encoding="utf-8"))
+
+
+
 if __name__ == "__main__":
     unittest.main()

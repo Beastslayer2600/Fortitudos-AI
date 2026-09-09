@@ -1,6 +1,7 @@
 """sqlite page index. As-of columns migrate in place."""
 import os
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -17,6 +18,12 @@ CREATE TABLE IF NOT EXISTS pages (
     content_hash TEXT DEFAULT '',
     effective_from TEXT DEFAULT '',
     effective_to TEXT DEFAULT '',
+    -- When the DESK learned this page, as distinct from when the terms it
+    -- describes applied in the world. effective_from/to is valid time; this is
+    -- transaction time. Without it the index can say what applied on a date,
+    -- but not what it would have told you on that date — and after a document
+    -- is re-ingested or corrected, those are different answers.
+    ingested_at TEXT DEFAULT '',
     domain TEXT DEFAULT '',
     UNIQUE(source, page)
 );
@@ -41,6 +48,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("content_hash", "TEXT DEFAULT ''"),
         ("effective_from", "TEXT DEFAULT ''"),
         ("effective_to", "TEXT DEFAULT ''"),
+        ("ingested_at", "TEXT DEFAULT ''"),
         ("domain", "TEXT DEFAULT ''"),
     ):
         if name not in cols:
@@ -109,8 +117,9 @@ def add_page(
     vec = np.asarray(embedding, dtype=np.float32)
     conn.execute(
         "INSERT OR REPLACE INTO pages "
-        "(source, page, text, embedding, content_hash, effective_from, effective_to, domain) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "(source, page, text, embedding, content_hash, effective_from, effective_to, "
+        "domain, ingested_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             source,
             page,
@@ -120,6 +129,7 @@ def add_page(
             effective_from or guessed.get("effective_from") or "",
             effective_to or guessed.get("effective_to") or "",
             domain or _domain_of(source),
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
         ),
     )
 

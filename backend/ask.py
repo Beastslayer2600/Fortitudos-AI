@@ -1,6 +1,7 @@
 """Fortitudo AI - ask. Grounded answer in the room doctrine shape."""
 import argparse
 import os
+import time
 import sys
 
 import store
@@ -48,7 +49,8 @@ def _keep_source(room: str, source: str) -> bool:
     return True
 
 
-def answer(conn, question, history=None, client_excerpt="", room="", client_id=""):
+def answer(conn, question, history=None, client_excerpt="", room="", client_id="",
+           log: bool = True):
     """Answer in one room, under that room's corpus rules.
 
     An empty `room` is classified from the question; a caller that has already
@@ -57,6 +59,7 @@ def answer(conn, question, history=None, client_excerpt="", room="", client_id="
     in scope at all, and whether filed client documents may be quoted. Passing
     an excerpt to a room that is not client-aware does not make it one.
     """
+    started = time.time()
     room = (room or classify(question).room).lower()
     spec = get_room(room)
     if not spec.include_clients:
@@ -135,6 +138,19 @@ def answer(conn, question, history=None, client_excerpt="", room="", client_id="
 
     if spec.draft_banner and not grounded.lstrip().startswith(spec.draft_banner.strip()):
         grounded = spec.draft_banner + grounded
+
+    # Written after the answer is final, so the log holds what the adviser
+    # actually saw. record() swallows its own errors: a desk that cannot
+    # answer because its logbook is full is worse than a gap in the logbook.
+    if log:
+        from answer_log import record
+        from config import CHAT_MODEL
+        record(
+            question=question, answer=grounded, room=room, results=results,
+            client_id=client_id, as_of=as_of, model=CHAT_MODEL,
+            seconds=time.time() - started, used_client=bool(client_excerpt),
+            invent_risk=getattr(thought, "invent_risk", "") if thought else "",
+        )
     return grounded, results
 
 

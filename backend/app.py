@@ -471,8 +471,17 @@ class Handler(BaseHTTPRequestHandler):
                     conn, question, history=history, client_excerpt=excerpt, room=room,
                     client_id=client_id,
                 )
+                # The log row this answer became, so the desk can mark it
+                # right or wrong without the adviser hunting for an id.
+                try:
+                    import answer_log
+                    logged = answer_log.recent(1)
+                    answer_id = logged[0]["id"] if logged else 0
+                except Exception:
+                    answer_id = 0
                 return self.send_json({
                     "answer": text,
+                    "answer_id": answer_id,
                     "room": room,
                     "why": why,
                     "standard": route.standard,

@@ -47,6 +47,24 @@ def handle_get(handler, parts) -> bool:
     import pdf_api
     if pdf_api.handle_get(handler, parts):
         return True
+    if parts == ["api", "answers"]:
+        import answer_log
+        rep = answer_log.report(7)
+        handler.send_json({
+            "since": rep.since,
+            "total": rep.total,
+            "hours_saved": round(rep.hours_saved, 1),
+            "by_room": rep.by_room,
+            "verdicts": rep.verdicts,
+            "unmarked": rep.unmarked,
+            # None, not 0, when nothing has been judged. An unmeasured rate
+            # is not a perfect one.
+            "wrong_rate": rep.wrong_rate,
+            "as_of_questions": rep.as_of_questions,
+            "recent": answer_log.recent(20),
+        })
+        return True
+
     if parts == ["api", "build"]:
         handler.send_json({"desk_build": DESK_BUILD, "public_base": public_base() or None})
         return True
@@ -110,6 +128,20 @@ def handle_post(handler, parts, body) -> bool:
     import pdf_api
     if pdf_api.handle_post(handler, parts, body):
         return True
+    if parts == ["api", "answers", "mark"]:
+        import answer_log
+        try:
+            ok = answer_log.mark(int(body.get("id") or 0),
+                                 str(body.get("verdict") or ""),
+                                 str(body.get("note") or ""))
+        except ValueError as exc:
+            handler.send_json({"error": str(exc),
+                               "verdicts": answer_log.VERDICTS}, 400)
+            return True
+        handler.send_json({"ok": ok} if ok else {"error": "No such answer."},
+                          200 if ok else 404)
+        return True
+
     if parts == ["api", "learn", "teach"]:
         from learn_teach import file_lesson
         title = str(body.get("title") or "Lesson").strip()
