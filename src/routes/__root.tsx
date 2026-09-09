@@ -1,4 +1,6 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
+import { useEffect } from "react";
+import { loadIdentity } from "@/lib/identity";
 import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { AppShell } from "@/components/layout/app-shell";
@@ -6,6 +8,20 @@ import { Toaster } from "sonner";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "Fortitudo AI";
+
+/**
+ * Asks the desk who it belongs to, once, on mount.
+ *
+ * Renders nothing. Until it lands, every consumer reads the generic defaults
+ * from lib/identity — so a page that paints before the fetch completes states
+ * nothing untrue, it just states less.
+ */
+function IdentityLoader() {
+  useEffect(() => {
+    void loadIdentity();
+  }, []);
+  return null;
+}
 
 export const Route = createRootRoute({
   head: () => ({
@@ -44,6 +60,7 @@ export const Route = createRootRoute({
       </head>
       <body className="bg-bg text-fg">
         <PreviewHostBridge />
+        <IdentityLoader />
         <AuthProvider>
           <AppShell>
             <Outlet />

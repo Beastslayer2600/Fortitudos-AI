@@ -82,7 +82,7 @@ function AskPage() {
       </h1>
       <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted">
         Answers come only from retrieved pages. Sample corpus — Fortitudo
-        Lifestyle Protector — stands in until your own PDFs are indexed on the
+        Sample Living Benefits Plan — stands in until your own PDFs are indexed on the
         desk machine.
       </p>
 

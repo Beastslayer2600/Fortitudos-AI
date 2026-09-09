@@ -27,3 +27,5 @@ FortitudoData/
 desk-token.txt
 *.db
 *.sqlite
+Modelfile.built
+identity.json

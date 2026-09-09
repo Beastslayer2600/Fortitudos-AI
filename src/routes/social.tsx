@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { identity } from "@/lib/identity";
 import { Copy, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ import {
   SITE_PAGES,
   SOCIAL_BRAND,
   type SocialBatch,
+  pageUrl,
 } from "@/lib/social-voice";
 
 export const Route = createFileRoute("/social")({ component: SocialPage });
@@ -62,7 +64,7 @@ function SocialPage() {
   return (
     <div className="mx-auto max-w-5xl px-5 py-8 md:px-10 md:py-12">
       <p className="text-[11px] tracking-[0.22em] text-muted uppercase">
-        Fortitudo Studios
+        {identity().studioName}
       </p>
       <h1 className="mt-2 font-display text-3xl tracking-tight md:text-4xl">
         Social Studio
@@ -76,7 +78,7 @@ function SocialPage() {
           target="_blank"
           rel="noreferrer"
         >
-          fortitudostudios.site
+          {identity().studioSite}
         </a>
         . You remain responsible under FAIS for anything published under your
         name.
@@ -103,12 +105,12 @@ function SocialPage() {
             </Select>
             <p className="text-xs leading-relaxed text-subtle">{page.argument}</p>
             <a
-              href={page.url}
+              href={pageUrl(page)}
               target="_blank"
               rel="noreferrer"
               className="text-xs text-accent hover:underline"
             >
-              {page.url}
+              {pageUrl(page)}
             </a>
           </div>
 

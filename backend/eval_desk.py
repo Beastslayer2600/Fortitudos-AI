@@ -294,7 +294,11 @@ def score_access(verbose=False) -> Score:
                     == "approve_documents"
                     and du.capability_for(["api", "anything"]) == "ask",
                     "a route mapped to the wrong capability")
-            approve = P("desk_extra.py").read_text(encoding="utf-8")
+            # Anchored on this file, not on the working directory: a relative
+            # path here passes from backend/ and fails from the repo root,
+            # making the check about where it was run rather than about code.
+            approve = (P(__file__).resolve().parent / "desk_extra.py").read_text(
+                encoding="utf-8")
             approve = approve[approve.index('["api", "register", "approve"]'):]
             approve = approve[:approve.index('["api", "register", "withdraw"]')]
             s.check('body.get("by")' not in approve and "user.name" in approve,
@@ -398,6 +402,79 @@ def score_retention(verbose=False) -> Score:
              client_store.CLIENT_DB, store.DB_PATH, store.DATA_DIR,
              answer_log.LOG_DB, retention.ERASURE_LOG) = saved
             store.invalidate_cache()
+    return s
+
+
+def score_fence(verbose=False) -> Score:
+    """The ring-fence: does the shared code state anybody's identity?
+
+    A one-time sweep is not a fence. The strings come back — a name in a
+    default, a product in a comment — each looking like a small convenience
+    rather than like the thing that contaminates the shared codebase. So this
+    runs on every evaluation.
+    """
+    import json, os, tempfile
+    from pathlib import Path as P
+    import identity, fence
+
+    s = Score("ring-fence")
+    keep_file, keep_root = identity.IDENTITY_FILE, fence.ROOT
+    env = {k: v for k, v in os.environ.items() if k.startswith(identity.ENV_PREFIX)}
+    for k in env:
+        os.environ.pop(k, None)
+    with tempfile.TemporaryDirectory() as tmp:
+        identity.IDENTITY_FILE = P(tmp) / "identity.json"
+        identity.reset()
+        try:
+            # Against the real tree. Identity is per-desk and may be unset here,
+            # but the employer list is fixed and always checkable.
+            rep = fence.check()
+            employer = [b for b in rep.breaches
+                        if b.value in fence.FORBIDDEN_IN_SHARED]
+            s.check(not employer, "employer material in shared code: " + "; ".join(
+                f"{b.path}:{b.line} {b.value}" for b in employer[:4]))
+            s.check(rep.checked > 50, "the fence barely checked anything")
+            checked = {p.relative_to(fence.ROOT).as_posix()
+                       for p in fence.shared_files()}
+            s.check("backend/expert_route.py" in checked,
+                    "the advice room is outside the fence")
+            s.check("src/lib/fortitudo.ts" in checked,
+                    "the frontend prompts are outside the fence")
+            s.check("backend/identity.py" not in checked,
+                    "the identity module is inside its own fence")
+
+            # An unconfigured desk must claim no licence rather than a made-up
+            # one, and must not be reported as a pass.
+            s.check(identity.load().licence_line == "",
+                    "an unconfigured desk claims a licence")
+            s.check("FSP" not in identity.evidence_engine_line(),
+                    "an unconfigured desk states an FSP in the advice prompt")
+            s.check("not a pass" in fence.render(fence.Report()),
+                    "a desk with nothing to look for was reported as clean")
+            s.check("the practice" not in rep.fenced_values
+                    and "the studio" not in rep.fenced_values,
+                    "the fence is looking for its own generic defaults")
+
+            # Against a synthetic tree, so the fixture is not written into the
+            # real one — where the fence would rightly find it.
+            root = P(tmp) / "repo" / "backend"
+            root.mkdir(parents=True)
+            (root / "thing.py").write_text('A = "Nomsa Dlamini"\n', encoding="utf-8")
+            P(identity.IDENTITY_FILE).write_text(
+                json.dumps({"adviser_name": "Nomsa Dlamini"}), encoding="utf-8")
+            identity.reset()
+            fence.ROOT = P(tmp) / "repo"
+            caught = fence.check()
+            s.check(not caught.ok and caught.breaches[0].value == "Nomsa Dlamini",
+                    "the fence did not catch a configured name in shared code")
+            s.check(caught.breaches[0].line == 1,
+                    "the fence did not report the line to look at")
+            if verbose:
+                print(fence.render(rep))
+        finally:
+            identity.IDENTITY_FILE, fence.ROOT = keep_file, keep_root
+            identity.reset()
+            os.environ.update(env)
     return s
 
 
@@ -612,6 +689,7 @@ def main() -> int:
         score_governance(args.verbose),
         score_access(args.verbose),
         score_retention(args.verbose),
+        score_fence(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))

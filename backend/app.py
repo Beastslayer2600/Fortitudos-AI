@@ -384,7 +384,7 @@ class Handler(BaseHTTPRequestHandler):
                         if not brief:
                             raise ValueError(
                                 "Give a brief for the page (shop facts, or "
-                                "'Fortitudo Wealth practice storefront'). "
+                                "'the practice storefront'). "
                                 "The page is never generated from the FNA."
                             )
                         html = mockup_router.generate_for_client(

@@ -14,6 +14,13 @@ from typing import Any, Dict, Optional
 from config import ROOT
 from llm import chat
 
+def _practice_name() -> str:
+    """The practice's own name. A storefront mockup headed with somebody
+    else's brand is worse than one headed with a placeholder."""
+    from identity import load
+    return load().practice_name
+
+
 TRAINING_PATH = ROOT / "docs" / "website_mockup_training.md"
 
 MOCKUP_SYSTEM = """You write website copy for professional-services one-page mockups.
@@ -330,12 +337,12 @@ def generate_mockup(
 {_training_excerpt()}
 
 Practice defaults (use when brief is silent):
-- brand: {practice_defaults.get("brand_name", "Fortitudo Wealth")}
+- brand: {practice_defaults.get("brand_name") or _practice_name()}
 - phone: {practice_defaults.get("phone", "[PHONE]")}
 - email: {practice_defaults.get("email", "[EMAIL]")}
 
 Client / project brief:
-{brief.strip() or "(no brief — produce a high-quality Fortitudo Wealth practice storefront mockup emphasising privacy-first local AI and technical evidence)"}
+{brief.strip() or "(no brief — produce a high-quality practice storefront mockup emphasising privacy-first local AI and technical evidence)"}
 
 Optional extracts from client documents (do not invent beyond this):
 {(client_context or "")[:12000] or "(none)"}
@@ -345,7 +352,8 @@ Optional extracts from client documents (do not invent beyond this):
     raw = chat(MOCKUP_SYSTEM, user, temperature=0.25, job="mockup")
     data = _extract_json(raw)
     # Soft-fill defaults
-    data.setdefault("brand_name", practice_defaults.get("brand_name", "Fortitudo Wealth"))
+    data.setdefault("brand_name",
+                    practice_defaults.get("brand_name") or _practice_name())
     data.setdefault("phone", practice_defaults.get("phone", "[PHONE]"))
     data.setdefault("email", practice_defaults.get("email", "[EMAIL]"))
     return render_html(data)

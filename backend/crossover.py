@@ -1,6 +1,6 @@
 """When rooms may share a skill — and when they must not.
 
-Craft may design the Fortitudo Wealth *marketing* site.
+Craft may design the practice's *marketing* site.
 Craft may not open an FNA, RoA, or product waiting-period as page copy.
 Advisor may not invent a plumber page.
 """
@@ -12,8 +12,8 @@ from typing import Literal
 Kind = Literal["trade", "practice", "unknown"]
 
 PRACTICE = re.compile(
-    r"\b(fortitudo wealth|financial advis|financial planner|fsp\b|fais\b|"
-    r"record of advice site|practice storefront|retirement planning page|"
+    r"\b(practice storefront|financial advis|financial planner|fsp\b|fais\b|"
+    r"record of advice site|retirement planning page|"
     r"wealth site|advisor website|adviser website)\b",
     re.I,
 )

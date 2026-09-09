@@ -85,8 +85,8 @@ CHAT_NUM_PREDICT = int(os.environ.get("FORTITUDO_CHAT_NUM_PREDICT", "400"))
 
 # ---------------------------------------------------------------- retrieval
 # We index at PAGE level, not paragraph level. This is deliberate:
-# benefit matrices in the Lifestyle Protector guide span a whole page and
-# get destroyed by small chunks. A page keeps the table intact.
+# benefit matrices in a risk-product guide span a whole page and get destroyed
+# by small chunks. A page keeps the table intact.
 TOP_K = 4                 # pages fed to the model after hybrid fusion
 # Candidate pool size is controlled in retrieval.py (CANDIDATE_POOL)
 KEYWORD_BOOST = 0.15      # bonus applied when query terms appear literally

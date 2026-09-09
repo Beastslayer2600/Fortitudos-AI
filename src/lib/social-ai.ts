@@ -3,8 +3,9 @@ import { claimGuard } from "./craft.ts";
 import {
   offlineSocialBatch,
   SITE_PAGES,
-  VOICE_SYSTEM,
+  voiceSystem,
   type SocialBatch,
+  pageUrl,
 } from "./social-voice.ts";
 
 async function chat(system: string, user: string, maxTokens: number) {
@@ -63,7 +64,7 @@ function parseBatch(text: string, pageId: string): SocialBatch | null {
         ? parsed.hashtags.map(String).slice(0, 6)
         : ["#FinancialPlanning", "#WealthStructure", "#SouthAfrica"],
       pageId: page.id,
-      pageUrl: page.url,
+      pageUrl: pageUrl(page),
       pageTitle: page.title,
     };
   } catch {
@@ -91,7 +92,7 @@ export const generateSocialBatch = createServerFn({ method: "POST" })
 
     const user = [
       `Source page: ${page.title}`,
-      `URL: ${page.url}`,
+      `URL: ${pageUrl(page)}`,
       `Section: ${page.section}`,
       `Argument (do not invent beyond this): ${page.argument}`,
       `Default audience hook: ${page.audienceHook}`,
@@ -106,7 +107,7 @@ export const generateSocialBatch = createServerFn({ method: "POST" })
       .filter(Boolean)
       .join("\n");
 
-    const result = await chat(VOICE_SYSTEM, user, 900);
+    const result = await chat(voiceSystem(), user, 900);
     if (!result.ok) {
       return { ok: true as const, batch: fallback, mode: "offline" as const };
     }

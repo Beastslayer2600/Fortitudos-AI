@@ -144,6 +144,21 @@ def handle_get(handler, parts) -> bool:
         })
         return True
 
+    if parts == ["api", "identity"]:
+        import identity as ident
+        me = ident.load()
+        # camelCase to match src/lib/identity.ts, which consumes this directly.
+        handler.send_json({
+            "adviserName": me.adviser_name, "fspName": me.fsp_name,
+            "fspNumber": me.fsp_number, "practiceName": me.practice_name,
+            "studioName": me.studio_name, "studioSite": me.studio_site,
+            "studioEmail": me.studio_email, "contactPhone": me.contact_phone,
+            "city": me.city, "sampleProduct": me.sample_product,
+            "licenceLine": me.licence_line, "configured": me.configured,
+            "missingForDocument": me.missing(),
+        })
+        return True
+
     if parts == ["api", "build"]:
         handler.send_json({"desk_build": DESK_BUILD, "public_base": public_base() or None})
         return True

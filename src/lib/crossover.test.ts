@@ -14,7 +14,7 @@ test("every client-file phrase the backend refuses is refused here too", () => {
 });
 
 test("the practice pattern still matches what the backend matches", () => {
-  for (const phrase of ["fortitudo wealth", "practice storefront", "adviser website"]) {
+  for (const phrase of ["financial planner", "practice storefront", "adviser website"]) {
     assert.ok(py.includes(phrase), `crossover.py no longer lists ${phrase}`);
     assert.match(`about ${phrase} today`, PRACTICE, phrase);
   }

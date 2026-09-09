@@ -3,6 +3,7 @@
  * Desk Chat merges chat facts + client file into a working draft — blanks stay blank.
  * Never invent figures. Adviser verifies before the signed FNA / ROA.
  */
+import { identity, licenceLine } from "./identity.ts";
 import type {
   Client,
   ClientDocument,
@@ -208,13 +209,18 @@ export function buildFnaDraft(input: {
         field(
           "adviser_name",
           "Adviser name",
-          pick(facts, "adviser_name").value || input.adviserName || "Gert Fourie",
+          pick(facts, "adviser_name").value ||
+            input.adviserName ||
+            identity().adviserName,
           pick(facts, "adviser_name").value ? "chat" : "file",
         ),
         field(
           "fsp_rep",
           "FSP / rep no.",
-          pick(facts, "fsp", "fsp_rep", "rep_no").value || "Liberty Group Limited FSP 2409",
+          // Blank when the desk has not been told its own licence. A blank
+          // field is marked as blank and chased; a hardcoded FSP number is
+          // silently wrong on a signed document.
+          pick(facts, "fsp", "fsp_rep", "rep_no").value || licenceLine(),
           pick(facts, "fsp", "fsp_rep").value ? "chat" : "file",
         ),
         field(
@@ -532,7 +538,10 @@ export function buildFnaDraft(input: {
     clientName: c.name,
     meetingType: pick(facts, "meeting_type").value || "Full FNA",
     meetingDate: input.meetingDate || pick(facts, "meeting_date").value || "",
-    adviserName: pick(facts, "adviser_name").value || input.adviserName || "Gert Fourie",
+    adviserName:
+      pick(facts, "adviser_name").value ||
+      input.adviserName ||
+      identity().adviserName,
     sections,
     filledCount,
     blankCount,

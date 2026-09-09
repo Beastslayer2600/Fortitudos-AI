@@ -141,8 +141,8 @@ FILING = [
      "income and expenses recorded.", "Signed FNA"),
     ("RECORD OF ADVICE. The following products were recommended and the "
      "reasons are set out below.", "ROA"),
-    ("QUOTATION. Lifestyle Protector. Premium payable monthly. This quote is "
-     "valid for 30 days.", "Quote"),
+    ("QUOTATION. Comprehensive Living Benefits. Premium payable monthly. This "
+     "quote is valid for 30 days.", "Quote"),
     ("Dear Mrs Botha, thank you for your email of last week regarding your "
      "policy documents.", "Correspondence"),
 ]

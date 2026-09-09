@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { identity } from "@/lib/identity";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -64,7 +65,10 @@ export function CraftApp() {
   const mockUrl =
     typeof window !== "undefined"
       ? `${window.location.origin}${mockPath}`
-      : `https://fortitudostudios.site${mockPath}`;
+      : // Falls back to the bare path when the desk has no site configured:
+        // a relative link that works locally beats an absolute link to a
+        // domain this desk may not own.
+        `${identity().studioSite.replace(/\/$/, "")}${mockPath}`;
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6 p-6">

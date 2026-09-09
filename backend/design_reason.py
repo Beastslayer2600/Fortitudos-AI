@@ -138,6 +138,20 @@ def apply_spec(facts: TradeFacts, spec: DesignSpec) -> TradeFacts:
     )
 
 
+def _studio_footer() -> str:
+    """Who to call, from the desk's identity rather than from this file.
+
+    A flyer printed by another studio should carry that studio's number. The
+    line used to carry one person's, which is wrong the moment anyone else
+    runs this and is employer-adjacent identity in shared code besides.
+    """
+    from identity import load
+    me = load()
+    parts = [p for p in (me.adviser_name, me.studio_name, me.contact_phone)
+             if p.strip()]
+    return " \u00b7 ".join(parts) if parts else ""
+
+
 def flyer_html(facts: TradeFacts, spec: DesignSpec, mock_url: str) -> str:
     from html import escape
     public = (
@@ -159,7 +173,7 @@ def flyer_html(facts: TradeFacts, spec: DesignSpec, mock_url: str) -> str:
         "h1{font-size:1.4rem}.qr{width:160px;height:160px}.warn{color:#8a1f1f}</style></head><body>"
         f"<p style=\"letter-spacing:.14em;text-transform:uppercase;font-size:.7rem\">{escape(facts.city)} · {escape(spec.intent)}</p>"
         f"<h1>{escape(facts.name)}</h1><p>{escape(spec.flyer_line)}</p>{media}"
-        "<p>Call Gert · Fortitudo Studios · +27 77 386 6299</p>"
+        f"<p>{escape(_studio_footer())}</p>"
         f"{warn}</body></html>"
     )
 

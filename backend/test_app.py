@@ -1,4 +1,5 @@
 """HTTP layer: CORS origin rules and the Learn routes the desk UI calls."""
+import contextlib
 import base64
 import json
 import os
@@ -469,7 +470,7 @@ class ClientMockupsTakeABriefOnly(unittest.TestCase):
             brief=brief, kwargs=kw) or "<html></html>"
         try:
             mockup_router.generate_for_client(
-                "Fortitudo Wealth",
+                "The Practice",
                 "Practice storefront. Turnover was R4,200,000 and the secret code is HUSH.",
                 extra_brief="calm, one CTA",
             )
@@ -1022,8 +1023,24 @@ class TheModelfileIsTheDesksIdentity(unittest.TestCase):
         self.assertIn("SYSTEM ", self.text)
 
     def test_it_states_the_fsp_boundary(self):
-        self.assertIn("FSP 2409", self.text)
         self.assertIn("You are not the FSP", self.text)
+
+    def test_the_owner_is_a_placeholder_not_a_person(self):
+        """A model built from this file carries its SYSTEM block wherever the
+        model goes, so a name compiled in here travels further than a name in
+        a prompt. model/build.py fills it in at build time instead."""
+        self.assertIn("{{DESK_OWNER}}", self.text)
+        self.assertNotRegex(self.text, r"FSP\s*\d{3,}")
+
+    def test_the_build_fills_the_placeholder_in(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "modelfile_build", Path(__file__).parent / "model" / "build.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        built = mod.render()
+        self.assertNotIn("{{DESK_OWNER}}", built)
+        self.assertIn("the desk of", built)
 
     def test_it_carries_the_refusals_the_code_enforces(self):
         for rule in ["waiting period", "24/7", "testimonial", "opening hours"]:
@@ -2933,6 +2950,232 @@ class ErasingAClientReachesEverywhereTheyExist(unittest.TestCase):
                                expires_on="2014-01-01", over_by_days=10)
         self.assertIn("Nothing is erased on a timer",
                       self.ret.render_due([overdue]))
+
+class TheSharedCodeStatesNobodysIdentity(unittest.TestCase):
+    """The ring-fence: a generic core is shareable, the employer-specific part
+    never is.
+
+    A one-time sweep does not deliver that. The strings come back — a name in a
+    default, a product in a comment, an FSP number in a prompt someone was
+    improving — each arriving as a small convenience rather than as the thing
+    that contaminates the shared codebase. So the fence is a check that runs.
+    """
+
+    def setUp(self):
+        import identity, fence, tempfile
+        self.ident, self.fence = identity, fence
+        self.tmp = tempfile.TemporaryDirectory()
+        self._file = identity.IDENTITY_FILE
+        self._env = {k: v for k, v in os.environ.items()
+                     if k.startswith(identity.ENV_PREFIX)}
+        for k in self._env:
+            os.environ.pop(k, None)
+        identity.IDENTITY_FILE = Path(self.tmp.name) / "identity.json"
+        identity.reset()
+
+    def tearDown(self):
+        self.ident.IDENTITY_FILE = self._file
+        for k in [k for k in os.environ if k.startswith(self.ident.ENV_PREFIX)]:
+            os.environ.pop(k, None)
+        os.environ.update(self._env)
+        self.ident.reset()
+        self.tmp.cleanup()
+
+    @contextlib.contextmanager
+    def _rooted(self, root: Path):
+        """Point the fence at another tree for the duration of a check."""
+        keep = self.fence.ROOT
+        self.fence.ROOT = root
+        try:
+            yield
+        finally:
+            self.fence.ROOT = keep
+
+    def _write(self, **values):
+        import json
+        Path(self.ident.IDENTITY_FILE).write_text(json.dumps(values),
+                                                  encoding="utf-8")
+        self.ident.reset()
+
+    # --- the defaults claim nothing -----------------------------------------
+
+    def test_an_unconfigured_desk_claims_no_licence(self):
+        """Not a plausible placeholder. A desk shipping "FSP 00000" will
+        eventually put that on a document."""
+        me = self.ident.load()
+        self.assertEqual(me.fsp_number, "")
+        self.assertEqual(me.adviser_name, "")
+        self.assertEqual(me.licence_line, "")
+        self.assertFalse(me.configured)
+
+    def test_the_advice_room_omits_the_licence_rather_than_inventing_one(self):
+        line = self.ident.evidence_engine_line()
+        self.assertIn("a financial adviser", line)
+        self.assertNotRegex(line, r"FSP\s*\d")
+
+    def test_a_half_configured_desk_states_half_a_fact(self):
+        """Not a malformed whole one."""
+        self._write(adviser_name="A Adviser")
+        self.assertEqual(self.ident.load().licence_line, "A Adviser")
+        self.ident.reset()
+        self._write(fsp_name="Some Body", fsp_number="1234")
+        self.assertEqual(self.ident.load().licence_line, "Some Body FSP 1234")
+
+    def test_a_fully_configured_desk_states_the_whole_licence(self):
+        self._write(adviser_name="A Adviser", fsp_name="Some Body",
+                    fsp_number="1234")
+        self.assertEqual(self.ident.load().licence_line,
+                         "A Adviser (Some Body FSP 1234)")
+        self.assertIn("A Adviser (Some Body FSP 1234)",
+                      self.ident.evidence_engine_line())
+
+    def test_it_says_which_fields_a_document_still_needs(self):
+        self._write(adviser_name="A Adviser")
+        self.assertEqual(self.ident.load().missing(), ["fsp_name", "fsp_number"])
+
+    # --- where the values come from ------------------------------------------
+
+    def test_the_environment_beats_the_file(self):
+        self._write(adviser_name="From The File")
+        os.environ[self.ident.ENV_PREFIX + "ADVISER_NAME"] = "From The Env"
+        self.ident.reset()
+        self.assertEqual(self.ident.load().adviser_name, "From The Env")
+
+    def test_an_unreadable_file_does_not_stop_the_desk(self):
+        Path(self.ident.IDENTITY_FILE).write_text("{not json", encoding="utf-8")
+        self.ident.reset()
+        self.assertFalse(self.ident.load().configured)
+
+    def test_an_unknown_key_is_ignored_not_fatal(self):
+        """An identity file written for a later version must not stop this one
+        starting."""
+        self._write(adviser_name="A Adviser", favourite_colour="blue")
+        self.assertEqual(self.ident.load().adviser_name, "A Adviser")
+
+    # --- the fence -----------------------------------------------------------
+
+    def test_the_fence_finds_a_configured_name_in_shared_code(self):
+        """The check has to actually catch something, or it proves nothing."""
+        self._write(adviser_name="Fortitudo AI")     # a string really in the source
+        rep = self.fence.check()
+        self.assertFalse(rep.ok)
+        self.assertTrue(any(b.value == "Fortitudo AI" for b in rep.breaches))
+
+    def _synthetic_tree(self, source: str) -> Path:
+        """A tiny fake repository, so a test can configure an identity without
+        that identity landing in the real tree the fence scans.
+
+        Any fixture written into this file would itself be found by the fence —
+        correctly — and the honest fix is a separate tree, not an exemption.
+        """
+        root = Path(self.tmp.name) / "repo"
+        (root / "backend").mkdir(parents=True)
+        (root / "backend" / "thing.py").write_text(source, encoding="utf-8")
+        return root
+
+    def test_the_fence_is_clean_when_the_shared_code_names_nobody(self):
+        root = self._synthetic_tree("VERSION = '1.0'\n")
+        self._write(adviser_name="Nomsa Dlamini", fsp_number="778812",
+                    studio_name="Kestrel Page Works")
+        with self._rooted(root):
+            rep = self.fence.check()
+        self.assertTrue(rep.ok, [b.value for b in rep.breaches])
+        self.assertEqual(rep.checked, 1)
+
+    def test_the_fence_finds_each_kind_of_configured_value(self):
+        root = self._synthetic_tree(
+            'ADVISER = "Nomsa Dlamini"\nFSP = "778812"\n'
+            'STUDIO = "Kestrel Page Works"\n')
+        self._write(adviser_name="Nomsa Dlamini", fsp_number="778812",
+                    studio_name="Kestrel Page Works")
+        with self._rooted(root):
+            rep = self.fence.check()
+        self.assertFalse(rep.ok)
+        self.assertEqual({b.value for b in rep.breaches},
+                         {"Nomsa Dlamini", "778812", "Kestrel Page Works"})
+
+    def test_the_fence_reports_the_line_so_a_person_can_look(self):
+        root = self._synthetic_tree('X = 1\nADVISER = "Nomsa Dlamini"\n')
+        self._write(adviser_name="Nomsa Dlamini")
+        with self._rooted(root):
+            rep = self.fence.check()
+        self.assertEqual(rep.breaches[0].line, 2)
+        self.assertIn("Nomsa Dlamini", rep.breaches[0].text)
+
+    def test_the_real_repository_carries_no_employer_material(self):
+        """Runs against the actual tree. Identity is per-desk and may not be
+        configured here, but the employer list is fixed and always checkable."""
+        rep = self.fence.check()
+        employer = [b for b in rep.breaches
+                    if b.value in self.fence.FORBIDDEN_IN_SHARED]
+        self.assertEqual(employer, [], "\n".join(
+            f"{b.path}:{b.line} {b.value}" for b in employer))
+
+    def test_the_fence_does_not_flag_its_own_generic_defaults(self):
+        """Fencing "the studio" matches ordinary prose and reports the absence
+        of identity as a breach — the one result that stops people running it."""
+        rep = self.fence.check()
+        self.assertNotIn("the studio", rep.fenced_values)
+        self.assertNotIn("the practice", rep.fenced_values)
+
+    def test_employer_material_is_forbidden_however_the_desk_is_configured(self):
+        """An employer's name is not one of the desk's own facts, so it cannot
+        be read from settings and is blocked outright.
+
+        Read from the list rather than spelled out here — writing the names
+        into this file would be the very thing the list forbids.
+        """
+        rep = self.fence.check()
+        self.assertTrue(self.fence.FORBIDDEN_IN_SHARED)
+        for name in self.fence.FORBIDDEN_IN_SHARED:
+            self.assertIn(name, rep.fenced_values)
+
+    def test_a_short_value_is_not_fenced(self):
+        """"5" as an FSP number would match every line containing a five."""
+        self._write(fsp_number="42")
+        self.assertNotIn("42", self.fence.check().fenced_values)
+
+    def test_the_fence_checks_the_trees_it_claims_to(self):
+        checked = {p.relative_to(self.fence.ROOT).as_posix()
+                   for p in self.fence.shared_files()}
+        self.assertIn("backend/expert_route.py", checked)
+        self.assertIn("src/lib/fortitudo.ts", checked)
+        self.assertNotIn("backend/identity.py", checked)
+
+    def test_the_advisers_own_content_is_named_rather_than_fenced(self):
+        """It is not shared code, and "what would have to come out" is the
+        question the fence is really answering."""
+        rep = self.fence.check()
+        self.assertTrue(any(f.startswith("backend/docs/learn/")
+                            for f in rep.local_files))
+        for path in rep.local_files:
+            self.assertFalse(any(b.path == path for b in rep.breaches))
+
+    def test_an_unconfigured_desk_is_not_reported_as_a_pass(self):
+        """Nothing to look for is not the same as nothing to find."""
+        rep = self.fence.check()
+        self.assertIn("not a pass", self.fence.render(
+            self.fence.Report(checked=rep.checked)))
+
+    # --- the places identity used to be hardcoded ---------------------------
+
+    def test_the_advice_room_reads_its_licence_rather_than_stating_one(self):
+        src = _source("expert_route.py")
+        self.assertIn("evidence_engine_line()", src)
+        self.assertNotRegex(src, r"FSP\s*\d{3,}")
+
+    def test_the_modelfile_is_a_template(self):
+        text = (Path(__file__).parent / "model" / "Modelfile").read_text(
+            encoding="utf-8")
+        self.assertIn("{{DESK_OWNER}}", text)
+
+    def test_the_built_modelfile_is_not_committed(self):
+        """It carries the identity, so it is generated and ignored."""
+        ignore = (Path(__file__).parent.parent / ".gitignore").read_text(
+            encoding="utf-8")
+        self.assertIn("Modelfile.built", ignore)
+        self.assertIn("identity.json", ignore)
+
 
 if __name__ == "__main__":
     unittest.main()

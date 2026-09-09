@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import List
 
+from identity import evidence_engine_line
 from reason import DOCTRINE
 
 # Two weights. INTENT is what the adviser is asking the desk to *do* — the
@@ -37,9 +38,21 @@ TOPIC = {
     "learn": [r"\bdoctrine\b"],
     "fa": [
         r"\b(waiting period|survival period|severity|exclusion|premium|"
-        r"lifestyle protector|liberty|policy wording|benefit)\b",
+        r"policy wording|benefit|cover|underwriting)\b",
     ],
 }
+
+
+def _product_topics() -> list:
+    """Route on the product this desk is actually configured for.
+
+    The advice room used to route on one insurer's product name, compiled in.
+    That is both a leak and wrong for anybody else: the next desk's product
+    would not route at all.
+    """
+    from identity import load
+    name = (load().sample_product or "").strip()
+    return [r"\b" + re.escape(name.lower()) + r"\b"] if len(name) >= 4 else []
 
 INTENT_WEIGHT = 3
 TOPIC_WEIGHT = 1
@@ -56,9 +69,16 @@ def score_rooms(text: str):
     """Weighted score per room. Intent beats vocabulary."""
     blob = text or ""
     scores = {}
+    product = [re.compile(p, re.I) for p in _product_topics()]
     for room in PRECEDENCE:
         hits = sum(INTENT_WEIGHT for p in _INTENT_RE.get(room, []) if p.search(blob))
-        hits += sum(TOPIC_WEIGHT for p in _TOPIC_RE.get(room, []) if p.search(blob))
+        pats = list(_TOPIC_RE.get(room, []))
+        # Naming the desk's own product is advice-room vocabulary, and it is
+        # read at call time so a desk reconfigured while running routes on the
+        # product it has now.
+        if room == "fa":
+            pats += product
+        hits += sum(TOPIC_WEIGHT for p in pats if p.search(blob))
         scores[room] = hits
     return scores
 
@@ -134,7 +154,7 @@ def expert_system(room: str) -> str:
     return (
         f"You are Fortitudo AI in the {room} room.\n"
         f"{STANDARD[room]}\n{DOCTRINE[room]}\n{REFUSE[room]}\n"
-        "You are an evidence engine for Gert Fourie (FSP 2409). "
+        f"{evidence_engine_line()} "
         "You are not the FSP. You do not advise the end client.\n"
         "Shape: Take / Evidence / Gap / Next. Cite or omit. Never invent."
     )

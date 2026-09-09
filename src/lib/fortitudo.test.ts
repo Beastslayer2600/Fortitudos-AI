@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { resetIdentity, setIdentity } from "./identity.ts";
 import { test } from "node:test";
 import {
   ANSWER_SHAPE,
@@ -7,6 +8,7 @@ import {
   expertSystem,
   REFUSE,
   ROLE_BOUNDARY,
+  roleBoundary,
   ROOM_IDS,
   STANDARD,
   withIdentity,
@@ -63,11 +65,28 @@ test("the answer shape is the backend's answer shape", () => {
   }
 });
 
-test("the FSP boundary is stated verbatim", () => {
-  assert.ok(ROLE_BOUNDARY.includes("FSP 2409"));
-  assert.ok(ROLE_BOUNDARY.includes("You are not the FSP"));
-  assert.ok(expertRoute.includes("FSP 2409"), "expert_route.py no longer states the FSP");
+test("the FSP boundary is stated, and the FSP itself is not compiled in", () => {
+  // Both halves matter. The boundary sentence is the thing that keeps the desk
+  // an evidence engine, so it must always be there. The licence it names must
+  // NOT be there, because a hardcoded FSP number is one person's regulatory
+  // identity baked into code that is meant to be shareable.
+  assert.ok(roleBoundary().includes("You are not the FSP"));
   assert.ok(expertRoute.includes("You are not the FSP"));
+  assert.ok(expertRoute.includes("evidence_engine_line()"),
+    "expert_route.py no longer reads the licence from identity");
+  assert.ok(!/FSP\s*\d{3,}/.test(roleBoundary()),
+    "an FSP number is hardcoded in the frontend role boundary");
+  assert.ok(!/FSP\s*\d{3,}/.test(expertRoute),
+    "an FSP number is hardcoded in expert_route.py");
+});
+
+test("the boundary states a licence once the desk knows one", () => {
+  resetIdentity();
+  assert.ok(roleBoundary().includes("for a financial adviser"),
+    "an unconfigured desk should claim no licence");
+  setIdentity({ adviserName: "A Adviser", fspName: "Some Body", fspNumber: "1234" });
+  assert.ok(roleBoundary().includes("A Adviser (Some Body FSP 1234)"));
+  resetIdentity();
 });
 
 test("expertSystem names the room the way the backend does", () => {

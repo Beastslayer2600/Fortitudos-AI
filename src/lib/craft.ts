@@ -79,6 +79,8 @@ export type ConsentDecision = { allowed: boolean; kind: "pitch" | "ask" | "none"
  * unanswered ask is the only ask — silence is not consent. The door letter is
  * print, not electronic, so it is always allowed.
  */
+import { identity } from "./identity.ts";
+
 export function mayContactElectronically(lead: CraftLead): ConsentDecision {
   switch (lead.consent) {
     case "refused":
@@ -102,13 +104,37 @@ export function doorLetter(lead: CraftLead, mockUrl: string) {
     `already on your door and your van.\n\n` +
     `See it: ${mockUrl}\n\n` +
     `R${SKU.price.toLocaleString("en-ZA")} once, R${SKU.deposit.toLocaleString("en-ZA")} to start. If it is not useful, throw this away.\n\n` +
-    `Gert Fourie · Fortitudo Studios · +27 77 386 6299`
+    signOff()
   );
+}
+
+/**
+ * How the studio signs a letter: name, studio, phone — whichever are known.
+ *
+ * Assembled from the desk's identity rather than written into the copy, so a
+ * letter from an unconfigured desk is unsigned rather than signed by whoever
+ * happened to write this file.
+ */
+function signOff(): string {
+  const id = identity();
+  return [id.adviserName, id.studioName, id.contactPhone]
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .join(" \u00b7 ");
+}
+
+/** "<first name> at <studio>", or as much of it as is known. */
+function whoIsWriting(): string {
+  const id = identity();
+  const first = id.adviserName.trim().split(/\s+/)[0] || "";
+  const studio = id.studioName.trim();
+  if (first && studio) return `${first} at ${studio}`;
+  return first || studio;
 }
 
 export function consentAskText(lead: CraftLead) {
   return (
-    `Hello, this is Gert Fourie at Fortitudo Studios. ` +
+    (whoIsWriting() ? `Hello, this is ${whoIsWriting()}. ` : "Hello. ") +
     `May I send you a one-page website mock for ${lead.name} in ${lead.city}? ` +
     `Reply YES and I will send it. Reply NO and I will not contact you again about this.`
   );
@@ -121,7 +147,8 @@ export function mailtoLetter(lead: CraftLead, mockUrl: string) {
     `I put together a one-page mock for ${lead.name} in ${lead.city.split(",")[0]}. ` +
     `Call and WhatsApp sit at the top. No invented hours or reviews.\n\n` +
     `Look: ${mockUrl}\n\n` +
-    `The job is R5,500 once — R2,750 to start.\n\nGert\nFortitudo Studios\n+27 77 386 6299`;
+    `The job is R${SKU.price.toLocaleString("en-ZA")} once — ` +
+    `R${SKU.deposit.toLocaleString("en-ZA")} to start.\n\n${signOff()}`;
   const decision = mayContactElectronically(lead);
   if (!decision.allowed) return "";
   const body = encodeURIComponent(decision.kind === "pitch" ? pitch : consentAskText(lead));
@@ -135,7 +162,9 @@ export function whatsappLink(phone: string, name: string, mockUrl: string, conse
   const digits = phone.replace(/\D/g, "");
   const intl = digits.startsWith("0") ? `27${digits.slice(1)}` : digits;
   const pitch = `Hi ${name.split(" ")[0]}, I made a mock page for the shop. ${mockUrl}`;
-  const ask = `Hi, Gert at Fortitudo Studios. May I send you a one-page website mock for ${name}? Reply YES or NO.`;
+  const ask =
+    (whoIsWriting() ? `Hi, ${whoIsWriting()}. ` : "Hi. ") +
+    `May I send you a one-page website mock for ${name}? Reply YES or NO.`;
   const text = encodeURIComponent(decision.kind === "pitch" ? pitch : ask);
   return intl.length >= 10 ? `https://wa.me/${intl}?text=${text}` : "";
 }

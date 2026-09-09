@@ -16,7 +16,7 @@ export const CLIENT_FILE =
 
 /** Mirrors crossover.PRACTICE — the advisory practice talking about itself. */
 export const PRACTICE =
-  /\b(fortitudo wealth|financial advis|financial planner|fsp\b|fais\b|record of advice site|practice storefront|retirement planning page|wealth site|advisor website|adviser website)\b/i;
+  /\b(practice storefront|financial advis|financial planner|fsp\b|fais\b|record of advice site|retirement planning page|wealth site|advisor website|adviser website)\b/i;
 
 /**
  * A South African ID number: 13 digits, often spaced or dashed. The word

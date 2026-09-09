@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { identity } from "../lib/identity.ts";
 import {
   ClipboardCopy,
   Loader2,
@@ -301,7 +302,7 @@ function ChatPage() {
         emails: emails.filter((e) => e.clientId === client.id),
         projections: projections.filter((p) => p.clientId === client.id),
         chatTexts: fnaFactLines.current,
-        adviserName: "Gert Fourie",
+        adviserName: identity().adviserName,
       });
       setLastPrep({
         clientId: client.id,

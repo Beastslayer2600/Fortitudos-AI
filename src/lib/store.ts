@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { identity } from "./identity.ts";
 import { DOMAINS } from "./drama-domains.ts";
 import { mergeDiskClients } from "./merge-disk-clients.ts";
 import { project } from "./projections.ts";
@@ -248,7 +249,7 @@ function seed(): Pick<
       id: "e1",
       clientId: "pieter_van_der_merwe",
       direction: "Draft",
-      sender: "adviser@fortitudostudios.site",
+      sender: identity().studioEmail,
       recipient: "pieter@example.co.za",
       subject: "Information still needed before we can recommend",
       body: "Pieter — thank you for Friday. Before I draft the record of advice I still need the signed FNA (now on file) and confirmation of the existing living-cover policy number. Nothing in this note is advice.",
@@ -418,7 +419,7 @@ export const useFortitudo = create<State>()(
               id: uid("mail"),
               clientId,
               direction: "Draft",
-              sender: "adviser@fortitudostudios.site",
+              sender: identity().studioEmail,
               recipient,
               subject,
               body,

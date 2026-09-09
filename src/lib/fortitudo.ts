@@ -12,6 +12,7 @@
  * fails if the two drift apart. Python stays the source of truth; this is a
  * transcription that is checked.
  */
+import { licenceLine } from "./identity.ts";
 
 export type RoomId = "fa" | "roa" | "voice" | "craft" | "drama" | "learn";
 
@@ -94,11 +95,22 @@ export const ANSWER_SHAPE = [
  * This is the sentence that keeps the desk an evidence engine rather than an
  * adviser, and it belongs on every prompt this app sends.
  */
-export const ROLE_BOUNDARY = [
-  "You are an evidence engine for Gert Fourie (FSP 2409).",
-  "You are not the FSP. You do not advise the end client.",
-  "Shape: Take / Evidence / Gap / Next. Cite or omit. Never invent.",
-].join(" ");
+export function roleBoundary(): string {
+  // Built per call, not once at import: the identity arrives from the backend
+  // after this module loads, and a snapshot taken at import would state that
+  // the desk belongs to nobody for the rest of the session.
+  const who = licenceLine();
+  return [
+    who
+      ? `You are an evidence engine for ${who}.`
+      : "You are an evidence engine for a financial adviser.",
+    "You are not the FSP. You do not advise the end client.",
+    "Shape: Take / Evidence / Gap / Next. Cite or omit. Never invent.",
+  ].join(" ");
+}
+
+/** @deprecated a snapshot taken at import; call `roleBoundary()` instead. */
+export const ROLE_BOUNDARY = roleBoundary();
 
 export function isRoom(value: string): value is RoomId {
   return (ROOM_IDS as readonly string[]).includes(value);
@@ -116,7 +128,7 @@ export function expertSystem(room: string): string {
     STANDARD[id],
     DOCTRINE[id],
     REFUSE[id],
-    ROLE_BOUNDARY,
+    roleBoundary(),
   ].join("\n");
 }
 

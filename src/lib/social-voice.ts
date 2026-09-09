@@ -1,11 +1,22 @@
 /**
- * Gert Fourie / Fortitudo Studios — Social Media Voice Profile
- * Standing instruction set for LinkedIn, Instagram, WhatsApp Status.
- * Source: fortitudostudios.site + outreach playbook (25 Aug 2026).
+ * Social media voice profile — the brand's standing instruction set for
+ * LinkedIn, Instagram and WhatsApp Status.
+ *
+ * The positioning below is the brand's, and stays. The *identity* — who is
+ * writing, under whose licence, at what address — is read from the desk's
+ * configuration, because an FSP number written into shared source is one
+ * person's regulatory identity compiled into code anyone might be handed.
+ *
+ * Where no licence is configured the regulatory line is empty, and the prompt
+ * below simply omits it. A social post that names no FSP is a post; a social
+ * post naming the wrong FSP is a regulatory problem.
  */
+import { identity, licenceLine } from "./identity.ts";
 
 export const SOCIAL_BRAND = {
-  site: "https://www.fortitudostudios.site",
+  get site() {
+    return identity().studioSite;
+  },
   tagline: "You work hard for your money. Let's structure it to endure.",
   signature: "Discipline over emotion. Structure over speculation.",
   bio: "Financial strategy for high-income professionals who value clarity, discipline, and long-term growth.",
@@ -15,8 +26,10 @@ export const SOCIAL_BRAND = {
     "Stewardship over speculation, clarity over complexity. No market prediction or reactive advice — the value is the system.",
   audience:
     "Professionals, business owners, and families for whom earning is merely a starting point — money as a collection of products rather than a structure.",
-  regulatory:
-    "Gert Fourie, financial adviser under Liberty Group Limited (FSP 2409), Pretoria.",
+  get regulatory() {
+    const line = licenceLine();
+    return line ? `${line}, financial adviser, ${identity().city}.` : "";
+  },
 } as const;
 
 export type SitePageRef = {
@@ -24,10 +37,22 @@ export type SitePageRef = {
   section: "Insights" | "Guides" | "Services" | "Home";
   title: string;
   path: string;
-  url: string;
   argument: string;
   audienceHook: string;
 };
+
+/**
+ * Where a page lives, built from the desk's configured site.
+ *
+ * Each entry already carries its `path`; the host used to be written out
+ * alongside it, which duplicated the fact and hardcoded one practice's domain
+ * into shared source. An unconfigured desk gets the bare path, which is a
+ * usable relative link rather than a link to somebody else's website.
+ */
+export function pageUrl(page: Pick<SitePageRef, "path">): string {
+  const site = identity().studioSite.replace(/\/$/, "");
+  return site ? `${site}${page.path}` : page.path;
+}
 
 /** Live source pages — claims must stay faithful to these arguments. */
 export const SITE_PAGES: SitePageRef[] = [
@@ -36,7 +61,6 @@ export const SITE_PAGES: SitePageRef[] = [
     section: "Insights",
     title: "Sequence of returns risk",
     path: "/insights/sequence-of-returns-risk",
-    url: "https://www.fortitudostudios.site/insights/sequence-of-returns-risk",
     argument:
       "The order of returns near retirement can matter more than the long-run average. A bad sequence early in drawdown can permanently reduce the income a portfolio can sustain, even if average returns later recover.",
     audienceHook: "pre-retirees and retirees living off capital",
@@ -46,7 +70,6 @@ export const SITE_PAGES: SitePageRef[] = [
     section: "Insights",
     title: "South Africa's two-pot retirement system",
     path: "/insights/two-pot-retirement-system",
-    url: "https://www.fortitudostudios.site/insights/two-pot-retirement-system",
     argument:
       "Two-pot did not change retirement in the abstract — it changed what you can actually touch, and when. Contributions split into a savings component accessible before retirement and a retirement component that is not. Misreading the split creates false liquidity assumptions.",
     audienceHook: "employees and professionals still contributing",
@@ -56,7 +79,6 @@ export const SITE_PAGES: SitePageRef[] = [
     section: "Insights",
     title: "Why diversification isn't just about asset classes",
     path: "/insights/why-diversification-isnt-just-about-asset-classes",
-    url: "https://www.fortitudostudios.site/insights/why-diversification-isnt-just-about-asset-classes",
     argument:
       "Owning several funds is not the same as being diversified. Correlation, concentration in a single employer or sector, and currency exposure can leave a portfolio looking broad while behaving as one risk.",
     audienceHook: "investor-minded professionals",
@@ -66,7 +88,6 @@ export const SITE_PAGES: SitePageRef[] = [
     section: "Guides",
     title: "Building wealth on a starter salary",
     path: "/guides/building-wealth-on-a-starter-salary",
-    url: "https://www.fortitudostudios.site/guides/building-wealth-on-a-starter-salary",
     argument:
       "Early-career income is limited, but the structure starts now: automate a small contribution, avoid lifestyle debt that compounds against you, and treat the first units of capital as a habit, not a windfall.",
     audienceHook: "younger and early-career professionals",
@@ -76,7 +97,6 @@ export const SITE_PAGES: SitePageRef[] = [
     section: "Guides",
     title: "Why saving feels painful",
     path: "/guides/why-saving-feels-painful",
-    url: "https://www.fortitudostudios.site/guides/why-saving-feels-painful",
     argument:
       "Saving feels like loss in the moment because present bias is real. The pain is the point of friction — structure (automation, rules, accounts with a purpose) reduces reliance on willpower.",
     audienceHook: "broad audience who know they should save and still resist",
@@ -86,7 +106,6 @@ export const SITE_PAGES: SitePageRef[] = [
     section: "Guides",
     title: "Rules of a wealthy mindset",
     path: "/guides/rules-of-a-wealthy-mindset",
-    url: "https://www.fortitudostudios.site/guides/rules-of-a-wealthy-mindset",
     argument:
       "Wealthy behaviour is less about intensity and more about rules: decide once, execute repeatedly, and refuse to renegotiate the plan every time markets or emotions move.",
     audienceHook: "professionals building a personal operating system",
@@ -96,7 +115,6 @@ export const SITE_PAGES: SitePageRef[] = [
     section: "Services",
     title: "Retirement Clarity",
     path: "/services",
-    url: "https://www.fortitudostudios.site/services",
     argument:
       "Retirement planning starts with numbers you can defend — income need, gap analysis, and a structure that survives sequence risk — not a product brochure.",
     audienceHook: "pre-retirees who want clarity before products",
@@ -106,7 +124,6 @@ export const SITE_PAGES: SitePageRef[] = [
     section: "Services",
     title: "Investment Discipline",
     path: "/services",
-    url: "https://www.fortitudostudios.site/services",
     argument:
       "Discipline is the system that prevents reaction: policy, rebalancing rules, and a written rationale so a bad week does not become a permanent change of plan.",
     audienceHook: "investors tired of reacting to headlines",
@@ -114,22 +131,37 @@ export const SITE_PAGES: SitePageRef[] = [
   {
     id: "home",
     section: "Home",
-    title: "Fortitudo Studios — home",
+    title: "Practice home",
     path: "/",
-    url: "https://www.fortitudostudios.site/",
     argument:
       "Structure money to endure: clarity, discipline, and long-term growth for professionals who already earn well but whose capital is still a collection of products.",
     audienceHook: "general professional audience",
   },
 ];
 
-export const VOICE_SYSTEM = `You write social media posts as Gert Fourie of Fortitudo Studios (fortitudostudios.site).
+function writerLine(): string {
+  const id = identity();
+  const who = [id.adviserName, id.studioName].filter((p) => p.trim()).join(" of ");
+  const site = id.studioSite ? ` (${id.studioSite})` : "";
+  return who ? `You write social media posts as ${who}${site}.`
+             : "You write social media posts for this practice.";
+}
+
+/**
+ * Built on each call, not once at import.
+ *
+ * A module-level template literal is evaluated when the module loads — before
+ * the identity has been fetched — so it would freeze the unconfigured text and
+ * every post would be written by nobody.
+ */
+export function voiceSystem(): string {
+  return `${writerLine()}
 
 Brand:
 - Tagline: "${SOCIAL_BRAND.tagline}"
 - Signature (use sparingly, not every post): "${SOCIAL_BRAND.signature}"
 - Core belief: "${SOCIAL_BRAND.coreBelief}"
-- Regulatory identity (public accuracy only when needed): ${SOCIAL_BRAND.regulatory}
+- Regulatory identity (public accuracy only when needed): ${SOCIAL_BRAND.regulatory || "(not configured — do not state an FSP)"}
 
 Voice rules (non-negotiable):
 1. Short, declarative sentences. Follow a short line with one longer sentence that builds the logic — not a string of short slogans.
@@ -158,8 +190,12 @@ Platform constraints:
 - LinkedIn: 80–150 words, short paragraphs with line breaks (use \n\n), specific article URL in the post, soft close.
 - Instagram: 2–4 short lines, warmer but still no hype; say "link in bio" or name the guide; no raw URL required.
 - Leonardo prompt: minimalist editorial, deep green / warm gold / cream paper feel, geometric or architectural structure motifs, no cash piles, no handshake stock, no people unless essential, negative space for text, no text in the image itself.
-- WhatsApp Status: one line, sometimes two; optional short www.fortitudostudios.site link.
+- WhatsApp Status: one line, sometimes two; optional short link to ${identity().studioSite || "the practice site"}.
 `;
+}
+
+/** @deprecated read `voiceSystem()` — this snapshot cannot see a later identity. */
+export const VOICE_SYSTEM = voiceSystem();
 
 export type SocialBatch = {
   linkedin: string;
@@ -181,7 +217,7 @@ export function offlineSocialBatch(page: SitePageRef): SocialBatch {
     ``,
     `Worth sitting with that for ${page.audienceHook} — not as a product pitch, as a structure question.`,
     ``,
-    page.url,
+    pageUrl(page),
   ].join("\n");
 
   const instagram = [
@@ -195,8 +231,8 @@ export function offlineSocialBatch(page: SitePageRef): SocialBatch {
 
   const whatsapp =
     page.id === "two-pot"
-      ? "Two-pot changed what you can touch, not just what you're told. Worth actually understanding your own split. www.fortitudostudios.site"
-      : `${page.argument.split(". ")[0]}. www.fortitudostudios.site`;
+      ? `Two-pot changed what you can touch, not just what you're told. Worth actually understanding your own split. ${identity().studioSite}`.trim()
+      : `${page.argument.split(". ")[0]}. ${identity().studioSite}`.trim();
 
   return {
     linkedin,
@@ -205,7 +241,7 @@ export function offlineSocialBatch(page: SitePageRef): SocialBatch {
     whatsapp,
     hashtags: ["#FinancialPlanning", "#WealthStructure", "#SouthAfrica"],
     pageId: page.id,
-    pageUrl: page.url,
+    pageUrl: pageUrl(page),
     pageTitle: page.title,
   };
 }

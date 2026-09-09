@@ -1,4 +1,5 @@
 import unittest
+from identity import load
 from trade_page import facts_from_text, is_trade_brief, render_trade_html
 
 class TradeDetect(unittest.TestCase):
@@ -18,7 +19,8 @@ class Facts(unittest.TestCase):
         self.assertIn("[PHONE]", html)
         self.assertIn("[HOURS]", html)
         self.assertIn("INTERNAL MOCKUP", html)
-        self.assertNotIn("Fortitudo Wealth", html)
+        # A trade page must not borrow the advisory practice's branding.
+        self.assertNotIn(load().practice_name, html)
         self.assertNotIn("Playfair", html)
 
 if __name__ == "__main__":

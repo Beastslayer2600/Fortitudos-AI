@@ -44,7 +44,7 @@ def generate_for_client(client_name: str, source_text: str, extra_brief: str = "
     brief = (
         f"Create a professional one-page website mockup for: {client_name}.\n"
         f"{extra_brief}\n"
-        "This is the Fortitudo Wealth / practice storefront. "
+        "This is the advisory practice storefront. "
         "Use Craft thinking: first screen, one primary CTA, omit missing facts. "
         "Do not invent FSP numbers, AUM or testimonials. "
         "Write from this brief only — no client document text is supplied."

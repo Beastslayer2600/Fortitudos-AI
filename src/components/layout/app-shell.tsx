@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
+import { identity } from "@/lib/identity";
 import {
   BookOpen,
   FolderOpen,
@@ -103,7 +104,7 @@ function NavBody({ pathname, onNavigate }: { pathname: string; onNavigate?: () =
       <div className="border-t border-border px-5 py-4 text-[11px] text-subtle">
         Fast index. Advice remains yours under FAIS.
         <a href="https://wa.me/27773866299" className="mt-2 flex items-center gap-1.5 text-muted">
-          <FolderOpen className="size-3" /> Fortitudo Studios
+          <FolderOpen className="size-3" /> {identity().studioName}
         </a>
       </div>
     </div>

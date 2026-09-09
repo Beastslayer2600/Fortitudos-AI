@@ -5,7 +5,10 @@ export type ProductPage = {
   text: string;
 };
 
-const SOURCE = "Fortitudo Lifestyle Protector — sample guide";
+// A deliberately fictional product. The demo corpus used to carry a real
+// insurer's product name, which put employer material in shared source for no
+// benefit — the wording here was always invented anyway.
+const SOURCE = "Sample Living Benefits Plan — demo guide";
 
 function p(page: number, title: string, text: string): ProductPage {
   return { source: SOURCE, page, title, text: text.trim() };
@@ -20,7 +23,7 @@ export const PAGES: ProductPage[] = [
   p(
     1,
     "How to use this guide",
-    `Fortitudo Lifestyle Protector is a sample living-benefits product used to
+    `Sample Living Benefits Plan is a sample living-benefits product used to
 demonstrate the adviser workspace. It is not a real policy and must not be
 quoted to a client as a market product.
 
@@ -138,7 +141,7 @@ Severe visual impairment | 6/60 or worse in the better eye, irreversible | 75%
 Hemianopia | Complete homonymous hemianopia, irreversible | 50%
 Loss of one eye | Anatomical loss or 3/60 or worse in one eye, other eye better than 6/18 | 30%
 
-Total blindness under Fortitudo Lifestyle Protector (and under the sample
+Total blindness under Sample Living Benefits Plan (and under the sample
 wording that advisers often search as “Living Lifestyle”) pays 100% of the
 living-benefit sum assured once irreversibility is certified and the 30-day
 survival period has elapsed.
@@ -325,7 +328,7 @@ Congenital conditions diagnosed before the start date are excluded.`,
 
 export const SAMPLE_QUESTIONS = [
   "What waiting period applies to hearing loss?",
-  "What does Lifestyle Protector pay for total blindness?",
+  "What does Sample Living Benefits Plan pay for total blindness?",
   "Is otosclerosis covered, and at what severity?",
   "What is the survival period for a heart attack claim?",
   "List the standard exclusions.",

@@ -6,7 +6,7 @@ import {
   type DeskAgentAction,
 } from "./desk-agent.ts";
 import { llmChat, llmComplete, probeLlm } from "./llm.ts";
-import { ROLE_BOUNDARY, withIdentity } from "./fortitudo.ts";
+import { roleBoundary, withIdentity } from "./fortitudo.ts";
 
 /** Polish a grounded meeting pack — never invent product figures. */
 export const refineMeetingPrep = createServerFn({ method: "POST" })
@@ -159,7 +159,7 @@ export const runDeskAgent = createServerFn({ method: "POST" })
 
     // The desk agent decides actions across every room, so it carries the
     // identity and the FSP boundary rather than any one room's doctrine.
-    const system = `${ROLE_BOUNDARY}
+    const system = `${roleBoundary()}
 
 ${DESK_AGENT_SYSTEM}
 

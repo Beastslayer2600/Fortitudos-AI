@@ -9,6 +9,7 @@ import type {
   NoteType,
 } from "./types.ts";
 import { CLIENT_STATUSES, DOC_TYPES, NOTE_TYPES } from "./types.ts";
+import { identity } from "./identity.ts";
 import { matchClients } from "./desk-chat.ts";
 import { buildFnaDraft } from "./fna-form.ts";
 import { briefToChatLines, buildOpsBrief } from "./ops-brief.ts";
@@ -302,7 +303,7 @@ export function applyDeskActions(
           projections: ctx.projections.filter((p) => p.clientId === id),
           chatTexts: fnaFactLines,
           meetingDate: action.meetingDate,
-          adviserName: "Gert Fourie",
+          adviserName: identity().adviserName,
         });
         fnaMarkdown = draft.markdown;
         applied.push(`FNA draft updated (${draft.filledCount} filled / ${draft.blankCount} blank)`);
@@ -325,7 +326,7 @@ export function applyDeskActions(
         emails: ctx.emails.filter((e) => e.clientId === id),
         projections: ctx.projections.filter((p) => p.clientId === id),
         chatTexts: fnaFactLines,
-        adviserName: "Gert Fourie",
+        adviserName: identity().adviserName,
       });
       mutators.addNote({
         clientId: id,
