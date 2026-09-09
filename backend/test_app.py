@@ -3176,6 +3176,147 @@ class TheSharedCodeStatesNobodysIdentity(unittest.TestCase):
         self.assertIn("Modelfile.built", ignore)
         self.assertIn("identity.json", ignore)
 
+class TheModelDocumentDescribesTheRealDesk(unittest.TestCase):
+    """MODEL.md is what a compliance officer is handed, so it has to be true
+    of the code rather than true of the code as it was when it was written.
+
+    Every number in it is checked here. A document that quietly drifts from the
+    system it describes is worse than no document, because it is believed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        raw = (Path(__file__).parent.parent / "MODEL.md").read_text(encoding="utf-8")
+        # Normalised, so a line-wrap in the prose cannot fail an assertion
+        # about a sentence.
+        cls.text = re.sub(r"\s+", " ", raw)
+
+    def test_the_stated_retrieval_and_model_settings_are_the_real_ones(self):
+        import config
+        self.assertIn(f"| Pages retrieved per question | {config.TOP_K} |", self.text)
+        self.assertIn(f"| Temperature | {config.CHAT_TEMPERATURE} |", self.text)
+        self.assertIn(f"| Reply length cap | {config.CHAT_NUM_PREDICT} tokens |",
+                      self.text)
+        self.assertIn(config.EMBED_MODEL, self.text)
+
+    def test_the_stated_filing_threshold_is_the_real_one(self):
+        import sort_engine
+        self.assertIn(f"must reach {sort_engine.MIN_CONFIDENCE} to file", self.text)
+
+    def test_the_stated_eval_count_is_the_real_one(self):
+        """The claim a reviewer is most likely to check."""
+        import eval_desk
+        total = sum(s.total for s in [
+            eval_desk.score_routing(), eval_desk.score_grounding(),
+            eval_desk.score_separation(), eval_desk.score_gate(),
+            eval_desk.score_versioning(), eval_desk.score_depth(),
+            eval_desk.score_pdf(), eval_desk.score_client_scope(),
+            eval_desk.score_backup(), eval_desk.score_filing(),
+            eval_desk.score_governance(), eval_desk.score_access(),
+            eval_desk.score_retention(), eval_desk.score_fence(),
+        ])
+        # score_retrieval needs an index and is counted from the harness run,
+        # so the document's number must be at least what runs without one.
+        stated = int(re.search(r"\*\*Measured\.\*\* (\d+) automated",
+                               self.text).group(1))
+        self.assertGreaterEqual(stated, total)
+
+    def test_it_states_that_retrieval_has_no_confidence_floor(self):
+        """The most important disclosure in the document, and the one it would
+        be most convenient to leave out."""
+        self.assertIn("There is no minimum score", self.text)
+        import retrieval, inspect
+        src = inspect.getsource(retrieval.search)
+        self.assertNotIn("min_score", src)
+        self.assertNotIn("MIN_SCORE", src)
+
+    def test_it_does_not_claim_an_ingest_guard_that_does_not_exist(self):
+        """The strategy this was written from listed a trust-tier ingest guard
+        as already built. It is not in this codebase, and a compliance document
+        that repeats the claim is the exact failure the desk exists to prevent.
+        """
+        self.assertIn("no ingest-time screening", self.text)
+        # Excludes this file, which names the thing it is looking for.
+        marker = "trust" + "_tier"
+        for path in Path(__file__).parent.glob("*.py"):
+            if path.name.startswith("test_"):
+                continue
+            src = path.read_text(encoding="utf-8", errors="replace")
+            self.assertNotIn(marker, src,
+                             f"{path.name} screens by trust tier — MODEL.md "
+                             "says nothing does, so one of the two is wrong")
+
+    def test_it_admits_what_has_not_been_measured(self):
+        for claim in ("wrong answer is **unknown**",
+                      "gate's pass rate against real generations is **unknown**",
+                      "confidently-wrong rate is **unknown**"):
+            self.assertIn(re.sub(r"\s+", " ", claim), self.text, claim)
+
+    def test_it_states_the_model_is_too_small_to_sell(self):
+        """Volunteered, because a reviewer will work it out anyway and it is
+        better to have said it first."""
+        self.assertIn("not* adequate for advice-grade retrieval", self.text)
+
+    def test_the_boundary_sentence_it_quotes_is_the_one_in_the_prompt(self):
+        import expert_route
+        prompt = expert_route.expert_system("fa")
+        self.assertIn("You are not the FSP", prompt)
+        self.assertIn("You do not advise the end client", prompt)
+        self.assertIn("It is not the FSP and it does not advise the end client",
+                      self.text)
+
+    def test_the_banner_it_quotes_is_the_real_banner(self):
+        from rooms import get_room
+        banner = get_room("roa").draft_banner.strip()
+        self.assertTrue(banner)
+        self.assertIn(banner, self.text)
+
+    def test_the_markers_it_lists_are_the_ones_the_code_emits(self):
+        for marker in ("[SPAN-CHECK]", "[VERSIONS]", "[UNAPPROVED]", "[RISK]",
+                       "[MISSING — open cited page]"):
+            self.assertIn(marker, self.text, marker)
+        import versioning, doc_register
+        self.assertIn("[SPAN-CHECK]", inspect_source(versioning.span_check))
+        self.assertIn("[VERSIONS]", inspect_source(versioning.version_note))
+        self.assertIn("[UNAPPROVED]", inspect_source(doc_register.provenance_note))
+
+    def test_the_draft_folder_it_names_is_the_real_one(self):
+        import client_store
+        self.assertIn(client_store.AI_DRAFT_FOLDER, self.text)
+
+    def test_the_deep_rooms_it_names_are_the_real_ones(self):
+        import ask
+        self.assertEqual(set(ask.DEEP_ROOMS), {"fa", "roa"})
+        self.assertIn("the advice room and the Record of Advice room", self.text)
+        self.assertIn("other four rooms answer in a single pass", self.text)
+        self.assertEqual(len(ask.DEEP_ROOMS) + 4, 6)
+
+    def test_it_states_there_is_no_cloud_fallback(self):
+        """Tested by handing the resolver a remote host, not by reading a flag:
+        pinned_local records that a redirect happened, so it is False in the
+        ordinary case where the host was local to begin with — which would
+        make a bare assertion on it prove nothing."""
+        self.assertIn("There is no cloud fallback", self.text)
+        import compute
+        remote = compute.resolve("fa", "http://gpu.example.net:11434")
+        self.assertTrue(compute.is_local(remote.host),
+                        "an advice-room job was sent to a remote host")
+        self.assertTrue(remote.pinned_local)
+        # Craft is the one job allowed out, and the document says so.
+        craft = compute.resolve("craft", "http://gpu.example.net:11434")
+        self.assertFalse(compute.is_local(craft.host))
+        self.assertIn("the one job permitted to use a remote model is Craft",
+                      self.text)
+        # An unnamed job is treated as sensitive, so a job added later is
+        # pinned by default rather than exempt by omission.
+        unnamed = compute.resolve("", "http://gpu.example.net:11434")
+        self.assertTrue(compute.is_local(unnamed.host))
+
+
+def inspect_source(fn) -> str:
+    import inspect
+    return inspect.getsource(fn)
+
 
 if __name__ == "__main__":
     unittest.main()
