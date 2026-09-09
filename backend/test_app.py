@@ -2674,6 +2674,265 @@ class TheDeskKnowsWhoIsAsking(unittest.TestCase):
         call = call[:call.index(")\n")]
         self.assertIn("desk_user", call)
 
+class ErasingAClientReachesEverywhereTheyExist(unittest.TestCase):
+    """POPIA s14 with the awkward part kept in.
+
+    A client's information lives in four places built at different times: the
+    vault files, the client database, the page index (the extracted text of
+    their documents), and the answer log. An erasure that clears the folder and
+    the database rows looks complete, reports complete, and leaves the desk
+    able to quote the client's ID number out of the index. These tests exist
+    for the third and fourth places.
+    """
+
+    def setUp(self):
+        import client_store, store, answer_log, retention, tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.cs, self.store, self.log, self.ret = (client_store, store,
+                                                   answer_log, retention)
+        self._saved = (client_store.CLIENT_DATA_DIR, client_store.CLIENTS_DIR,
+                       client_store.CLIENT_DB, store.DB_PATH, store.DATA_DIR,
+                       answer_log.LOG_DB, retention.ERASURE_LOG)
+        client_store.CLIENT_DATA_DIR = root
+        client_store.CLIENTS_DIR = root / "clients"
+        client_store.CLIENT_DB = root / "clients.db"
+        store.DB_PATH = root / "index.db"
+        store.DATA_DIR = root
+        store.invalidate_cache()
+        answer_log.LOG_DB = root / "answers.db"
+        retention.ERASURE_LOG = root / "erasures.db"
+
+    def tearDown(self):
+        (self.cs.CLIENT_DATA_DIR, self.cs.CLIENTS_DIR, self.cs.CLIENT_DB,
+         self.store.DB_PATH, self.store.DATA_DIR, self.log.LOG_DB,
+         self.ret.ERASURE_LOG) = self._saved
+        self.store.invalidate_cache()
+        self.tmp.cleanup()
+
+    ID_NUMBER = "8801015800087"
+
+    def _client(self, name="Thabo Molefe", status=None):
+        import numpy as np
+        cid = self.cs.create_client(name, "t@example.com", "0821112222")
+        self.cs.add_document(cid, "fna.pdf", b"%PDF signed", "Signed FNA")
+        self.cs.add_note(cid, "Meeting", "Review", "Discussed cover")
+        conn = self.store.connect()
+        self.store.add_page(conn, f"client:{cid}:fna.pdf", 1,
+                            f"{name}. Monthly income R48 000. ID {self.ID_NUMBER}.",
+                            np.zeros(8, dtype="float32"))
+        conn.commit()
+        self.aid = self.log.record(
+            question=f"What cover does {name} have?",
+            answer=f"{name}'s FNA shows R2.4m life cover.",
+            room="roa", client_id=cid,
+            results=[((1, f"client:{cid}:fna.pdf", 1, "t", "h"), 0.9)])
+        return cid
+
+    # --- the survey is offered before anything is removed -------------------
+
+    def test_the_survey_counts_all_four_places(self):
+        s = self.ret.survey(self._client())
+        self.assertEqual(len(s.files), 1)
+        self.assertGreaterEqual(s.total_db_rows, 3)
+        self.assertEqual(s.index_pages, 1)
+        self.assertEqual(s.log_rows, 1)
+
+    def test_the_survey_changes_nothing(self):
+        cid = self._client()
+        self.ret.survey(cid)
+        self.assertTrue(self.ret.survey(cid).anything)
+
+    def test_a_client_who_does_not_exist_surveys_to_nothing(self):
+        s = self.ret.survey("nobody_at_all")
+        self.assertFalse(s.exists)
+        self.assertFalse(s.anything)
+
+    # --- erasure is a dry run unless you ask ---------------------------------
+
+    def test_erase_is_a_dry_run_by_default(self):
+        """The destructive reading of a one-word command should be the one you
+        have to ask for."""
+        cid = self._client()
+        r = self.ret.erase(cid, by="M. Naidoo")
+        self.assertTrue(r.dry_run)
+        self.assertTrue(self.ret.survey(cid).anything)
+
+    def test_a_dry_run_still_reports_what_it_would_remove(self):
+        cid = self._client()
+        r = self.ret.erase(cid, by="M. Naidoo")
+        self.assertEqual((r.files, r.index_pages, r.log_rows), (1, 1, 1))
+
+    def test_an_erasure_needs_a_name_against_it(self):
+        cid = self._client()
+        r = self.ret.erase(cid, by="", dry_run=False)
+        self.assertTrue(r.problems)
+        self.assertTrue(self.ret.survey(cid).anything)
+
+    # --- the two places that get missed --------------------------------------
+
+    def test_erasure_removes_the_pages_the_index_learned(self):
+        """The failure this module exists to prevent."""
+        cid = self._client()
+        self.ret.erase(cid, by="M. Naidoo", dry_run=False)
+        conn = self.store.connect()
+        rows = conn.execute("SELECT COUNT(*) FROM pages WHERE text LIKE ?",
+                            (f"%{self.ID_NUMBER}%",)).fetchone()[0]
+        self.assertEqual(rows, 0, "the index can still quote the erased client")
+
+    def test_erasure_clears_the_source_fingerprint_too(self):
+        """Leaving it behind would let a later ingest call the document
+        unchanged and skip re-reading it."""
+        cid = self._client()
+        self.ret.erase(cid, by="M. Naidoo", dry_run=False)
+        conn = self.store.connect()
+        left = conn.execute("SELECT COUNT(*) FROM source_meta WHERE source LIKE ?",
+                            (f"client:{cid}:%",)).fetchone()[0]
+        self.assertEqual(left, 0)
+
+    def test_the_answer_log_is_redacted_not_deleted(self):
+        """The rows are the audit trail of advice that was given. Deleting them
+        puts a hole in the record of what happened."""
+        cid = self._client()
+        self.ret.erase(cid, by="M. Naidoo", dry_run=False)
+        row = self.log.get(self.aid)
+        self.assertIsNotNone(row, "the audit row was deleted")
+        self.assertEqual(row["question"], self.log.REDACTED)
+        self.assertEqual(row["answer"], self.log.REDACTED)
+
+    def test_redaction_keeps_what_makes_the_row_evidence(self):
+        cid = self._client()
+        self.ret.erase(cid, by="M. Naidoo", dry_run=False)
+        row = self.log.get(self.aid)
+        self.assertEqual(row["room"], "roa")
+        self.assertTrue(row["snapshot"], "the retrieval snapshot was lost")
+        self.assertTrue(row["asked_at"])
+
+    def test_redaction_clears_the_cited_filenames(self):
+        """A client document's filename is frequently the client's name."""
+        cid = self._client()
+        self.ret.erase(cid, by="M. Naidoo", dry_run=False)
+        row = self.log.get(self.aid)
+        self.assertEqual(row["sources"], [])
+        self.assertEqual(row["client_id"], "")
+
+    def test_the_name_is_gone_from_the_log_entirely(self):
+        cid = self._client(name="Thabo Molefe")
+        self.ret.erase(cid, by="M. Naidoo", dry_run=False)
+        raw = Path(self.log.LOG_DB).read_bytes()
+        self.assertNotIn(b"Thabo", raw)
+
+    def test_redacting_twice_does_not_double_count(self):
+        cid = self._client()
+        self.assertEqual(self.log.redact_client(cid), 1)
+        self.assertEqual(self.log.redact_client(cid), 0)
+
+    # --- completeness is verified, not assumed -------------------------------
+
+    def test_complete_is_set_by_re_surveying_not_by_the_deletes_running(self):
+        """Reporting success because the delete statements ran is how an
+        erasure gets certified while the index still holds the pages."""
+        import inspect
+        src = inspect.getsource(self.ret.erase)
+        self.assertIn("after = survey(client_id)", src)
+        self.assertIn("not after.anything", src)
+
+    def test_a_full_erasure_leaves_nothing_in_any_of_the_four(self):
+        cid = self._client()
+        r = self.ret.erase(cid, by="M. Naidoo", dry_run=False)
+        self.assertTrue(r.complete, r.problems)
+        after = self.ret.survey(cid)
+        self.assertEqual((len(after.files), after.total_db_rows,
+                          after.index_pages, after.log_rows), (0, 0, 0, 0))
+
+    # --- the receipt ---------------------------------------------------------
+
+    def test_a_receipt_proves_the_erasure_without_recreating_it(self):
+        cid = self._client(name="Thabo Molefe")
+        self.ret.erase(cid, by="M. Naidoo", reason="request", dry_run=False)
+        got = self.ret.receipts(cid)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["by"], "M. Naidoo")
+        self.assertTrue(got[0]["complete"])
+        self.assertNotIn("Thabo", str(got[0]))
+
+    def test_a_dry_run_writes_no_receipt(self):
+        cid = self._client()
+        self.ret.erase(cid, by="M. Naidoo")
+        self.assertEqual(self.ret.receipts(cid), [])
+
+    # --- what is due, and what is not ----------------------------------------
+
+    def test_an_active_client_is_never_due_however_old(self):
+        """A list that mixed active and closed would train whoever reads it to
+        skim."""
+        cid = self._client()
+        conn = self.cs.connect()
+        conn.execute("UPDATE clients SET status = 'Active', updated_at = ? "
+                     "WHERE id = ?", ("2009-01-01T00:00:00", cid))
+        conn.commit(); conn.close()
+        self.assertEqual([d.client_id for d in self.ret.due()], [])
+
+    def test_a_closed_client_past_the_period_is_due(self):
+        cid = self._client()
+        conn = self.cs.connect()
+        conn.execute("UPDATE clients SET status = 'Closed', updated_at = ? "
+                     "WHERE id = ?", ("2009-01-01T00:00:00", cid))
+        conn.commit(); conn.close()
+        self.assertIn(cid, [d.client_id for d in self.ret.due()])
+
+    def test_a_closed_client_inside_the_period_is_not_due(self):
+        import datetime as dt
+        cid = self._client()
+        recent = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+        conn = self.cs.connect()
+        conn.execute("UPDATE clients SET status = 'Closed', updated_at = ? "
+                     "WHERE id = ?", (recent, cid))
+        conn.commit(); conn.close()
+        self.assertEqual([d.client_id for d in self.ret.due()], [])
+
+    def test_the_period_has_a_named_legal_basis_not_a_bare_number(self):
+        self.assertIn("FAIS", self.ret.RETENTION_BASIS)
+        self.assertIn("s14", self.ret.RETENTION_BASIS)
+        self.assertIn(self.ret.RETENTION_BASIS, self.ret.render_due([]))
+
+    def test_a_leap_day_does_not_break_the_retention_date(self):
+        """29 February is not in most years, and a date that threw on one
+        client in four hundred would be found by that client."""
+        cid = self._client()
+        conn = self.cs.connect()
+        conn.execute("UPDATE clients SET status = 'Closed', updated_at = ? "
+                     "WHERE id = ?", ("2016-02-29T00:00:00", cid))
+        conn.commit(); conn.close()
+        self.assertIn(cid, [d.client_id for d in self.ret.due()])
+
+    def test_the_erase_route_needs_the_confirm_flag(self):
+        """Over HTTP a missing field must not read as "destroy it"."""
+        src = _source("desk_extra.py")
+        block = src[src.index('["api", "retention", "erase"]'):]
+        block = block[:block.index('["api", "learn", "teach"]')]
+        self.assertIn('body.get("confirm") is True', block)
+        self.assertIn("dry_run=not confirm", block)
+        self.assertIn("user.name", block)
+        self.assertNotIn('body.get("by")', block)
+
+    def test_reading_the_due_list_is_not_the_same_as_erasing(self):
+        import desk_users
+        self.assertEqual(desk_users.capability_for(["api", "retention"]), "clients")
+        self.assertEqual(desk_users.capability_for(["api", "retention", "erase"]),
+                         "approve_documents")
+
+    def test_nothing_is_erased_on_a_timer(self):
+        """A desk that quietly destroyed records a regulator may still call for
+        would be the worse failure — and "the software did it automatically"
+        is not a defence anyone wants to offer."""
+        import inspect
+        self.assertNotIn("erase", inspect.getsource(self.ret.due),
+                         "the due list erases something")
+        overdue = self.ret.Due(client_id="x", status="closed",
+                               expires_on="2014-01-01", over_by_days=10)
+        self.assertIn("Nothing is erased on a timer",
+                      self.ret.render_due([overdue]))
 
 if __name__ == "__main__":
     unittest.main()

@@ -268,6 +268,9 @@ def capability_for(parts: Sequence[str]) -> str:
         return "approve_documents" if len(p) > 2 else "documents"
     if p[:2] == ["api", "users"]:
         return "manage_users"
+    # Reading what is past its retention date is not the same as destroying it.
+    if p[:2] == ["api", "retention"]:
+        return "approve_documents" if p[2:3] == ["erase"] else "clients"
     # Both the client list and the client-document blobs. An approver reads
     # product documents; a client's file is not theirs to open.
     if p[:2] in (["api", "clients"], ["api", "documents"]):

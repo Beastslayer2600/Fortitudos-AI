@@ -119,6 +119,31 @@ def handle_get(handler, parts) -> bool:
         })
         return True
 
+    if parts == ["api", "retention"]:
+        import retention
+        items = retention.due()
+        handler.send_json({
+            "basis": retention.RETENTION_BASIS,
+            "years": retention.FAIS_RECORD_YEARS,
+            # Ids only. A list of people due for erasure, holding their names,
+            # would be its own POPIA problem.
+            "due": [{"client_id": d.client_id, "status": d.status,
+                     "expires_on": d.expires_on, "over_by_days": d.over_by_days}
+                    for d in items],
+            "nothing_is_automatic": True,
+        })
+        return True
+    if len(parts) == 3 and parts[:2] == ["api", "retention"]:
+        import retention
+        s = retention.survey(parts[2])
+        handler.send_json({
+            "client_id": s.client_id, "exists": s.exists, "status": s.status,
+            "files": len(s.files), "db_rows": s.db_rows,
+            "total_db_rows": s.total_db_rows,
+            "index_pages": s.index_pages, "log_rows": s.log_rows,
+        })
+        return True
+
     if parts == ["api", "build"]:
         handler.send_json({"desk_build": DESK_BUILD, "public_base": public_base() or None})
         return True
@@ -221,6 +246,28 @@ def handle_post(handler, parts, body) -> bool:
             str(body.get("source") or ""), user.name,
             str(body.get("reason") or ""))
         handler.send_json({"ok": ok, "message": msg}, 200 if ok else 400)
+        return True
+
+    if parts == ["api", "retention", "erase"]:
+        import retention
+        # Erasure is destructive and irreversible, so it takes the same
+        # capability as approving a document and the same rule about names:
+        # the eraser is whoever the credential says, not whoever the body says.
+        user, why = _who(handler, "approve_documents")
+        if user is None:
+            handler.send_json({"error": why}, 403)
+            return True
+        # Over HTTP the dry run has to be asked out of, exactly as it does on
+        # the command line. A missing field must not mean "destroy it".
+        confirm = body.get("confirm") is True
+        r = retention.erase(str(body.get("client_id") or ""), user.name,
+                            str(body.get("reason") or ""), dry_run=not confirm)
+        handler.send_json({
+            "client_id": r.client_id, "dry_run": r.dry_run,
+            "complete": r.complete, "files": r.files, "db_rows": r.db_rows,
+            "index_pages": r.index_pages, "log_rows": r.log_rows,
+            "problems": r.problems, "by": r.by,
+        })
         return True
 
     if parts == ["api", "learn", "teach"]:

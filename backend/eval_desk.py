@@ -310,6 +310,97 @@ def score_access(verbose=False) -> Score:
     return s
 
 
+def score_retention(verbose=False) -> Score:
+    """Whether an erasure reaches every place the client exists.
+
+    The property worth evaluating: an erasure that clears the vault folder and
+    the database rows looks complete and reports complete, while the page index
+    can still quote the client's ID number. Everything here is aimed at the two
+    places that get missed.
+    """
+    import tempfile
+    from pathlib import Path as P
+    import numpy as np
+    import client_store, store, answer_log, retention
+
+    s = Score("retention")
+    saved = (client_store.CLIENT_DATA_DIR, client_store.CLIENTS_DIR,
+             client_store.CLIENT_DB, store.DB_PATH, store.DATA_DIR,
+             answer_log.LOG_DB, retention.ERASURE_LOG)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = P(tmp)
+        client_store.CLIENT_DATA_DIR = root
+        client_store.CLIENTS_DIR = root / "clients"
+        client_store.CLIENT_DB = root / "clients.db"
+        store.DB_PATH = root / "index.db"
+        store.DATA_DIR = root
+        store.invalidate_cache()
+        answer_log.LOG_DB = root / "answers.db"
+        retention.ERASURE_LOG = root / "erasures.db"
+        try:
+            id_number = "8801015800087"
+            cid = client_store.create_client("Thabo Molefe", "t@example.com", "0821112222")
+            client_store.add_document(cid, "fna.pdf", b"%PDF signed", "Signed FNA")
+            client_store.add_note(cid, "Meeting", "Review", "Discussed cover")
+            conn = store.connect()
+            store.add_page(conn, f"client:{cid}:fna.pdf", 1,
+                           f"Thabo Molefe. Income R48 000. ID {id_number}.",
+                           np.zeros(8, dtype="float32"))
+            conn.commit()
+            aid = answer_log.record(question="What cover does Thabo Molefe have?",
+                                    answer="Thabo Molefe's FNA shows R2.4m.",
+                                    room="roa", client_id=cid,
+                                    results=[((1, f"client:{cid}:fna.pdf", 1, "t", "h"), 0.9)])
+
+            before = retention.survey(cid)
+            s.check(before.index_pages == 1,
+                    "the survey did not count the pages the index learned")
+            s.check(before.log_rows == 1, "the survey did not count the answer log")
+
+            dry = retention.erase(cid, by="M. Naidoo")
+            s.check(dry.dry_run and retention.survey(cid).anything,
+                    "erase destroyed something without being asked to")
+            s.check(retention.receipts(cid) == [], "a dry run wrote a receipt")
+            s.check(retention.erase(cid, by="", dry_run=False).problems != [],
+                    "an erasure was accepted with nobody's name on it")
+
+            r = retention.erase(cid, by="M. Naidoo", reason="request", dry_run=False)
+            s.check(r.complete, f"erasure reported incomplete: {r.problems}")
+
+            conn = store.connect()
+            left = conn.execute("SELECT COUNT(*) FROM pages WHERE text LIKE ?",
+                                (f"%{id_number}%",)).fetchone()[0]
+            s.check(left == 0, "the index can still quote the erased client")
+            meta = conn.execute("SELECT COUNT(*) FROM source_meta WHERE source LIKE ?",
+                                (f"client:{cid}:%",)).fetchone()[0]
+            s.check(meta == 0, "the source fingerprint outlived the pages")
+
+            row = answer_log.get(aid)
+            s.check(row is not None, "the audit row was deleted rather than redacted")
+            s.check(row and row["question"] == answer_log.REDACTED,
+                    "the question survived the erasure")
+            s.check(bool(row and row["snapshot"]),
+                    "redaction threw away the retrieval snapshot")
+            s.check(bool(row and row["sources"] == []),
+                    "the cited client filenames survived")
+            s.check(b"Thabo" not in P(answer_log.LOG_DB).read_bytes(),
+                    "the client's name is still in the log file")
+
+            got = retention.receipts(cid)
+            s.check(len(got) == 1 and got[0]["complete"] == 1,
+                    "no receipt was written for a completed erasure")
+            s.check("Thabo" not in str(got[0]),
+                    "the receipt recreated what it erased")
+            if verbose:
+                print(retention.render_survey(retention.survey(cid)))
+        finally:
+            (client_store.CLIENT_DATA_DIR, client_store.CLIENTS_DIR,
+             client_store.CLIENT_DB, store.DB_PATH, store.DATA_DIR,
+             answer_log.LOG_DB, retention.ERASURE_LOG) = saved
+            store.invalidate_cache()
+    return s
+
+
 def score_backup(verbose=False) -> Score:
     """The properties that separate a backup from a hope."""
     import sqlite3, tempfile
@@ -520,6 +611,7 @@ def main() -> int:
         score_filing(args.verbose),
         score_governance(args.verbose),
         score_access(args.verbose),
+        score_retention(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))

@@ -197,6 +197,40 @@ def mark(answer_id: int, verdict: str, note: str = "") -> bool:
         conn.close()
 
 
+# What a redacted row says where the question and answer were. Distinct text,
+# so a reviewer can tell an erased answer from an empty one.
+REDACTED = "[ERASED — client record erased under POPIA s14]"
+
+
+def redact_client(client_id: str) -> int:
+    """Blank one client's information out of the log, keeping the rows.
+
+    The rows are the audit trail of advice that was given; deleting them would
+    put a hole in the record of what happened, which is the opposite of what a
+    review needs. The personal information is the question, the answer text and
+    the client id, so those go. Time, room, model, timing and the retrieval
+    snapshot stay: what was said is gone, that something was said and from
+    which document versions remains provable.
+
+    sources_json is cleared too. It carries the filenames of the client's own
+    documents, and a filename is frequently the client's name.
+    """
+    if not client_id:
+        return 0
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE answers SET question = ?, answer = ?, client_id = '', "
+            "sources_json = '[]', verdict_note = '' "
+            "WHERE client_id = ? AND question != ?",
+            (REDACTED, REDACTED, client_id, REDACTED),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
 def get(answer_id: int) -> Optional[dict]:
     conn = connect()
     try:
