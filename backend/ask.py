@@ -50,7 +50,7 @@ def _keep_source(room: str, source: str) -> bool:
 
 
 def answer(conn, question, history=None, client_excerpt="", room="", client_id="",
-           log: bool = True):
+           log: bool = True, asked_by: str = ""):
     """Answer in one room, under that room's corpus rules.
 
     An empty `room` is classified from the question; a caller that has already
@@ -159,6 +159,7 @@ def answer(conn, question, history=None, client_excerpt="", room="", client_id="
             client_id=client_id, as_of=as_of, model=CHAT_MODEL,
             seconds=time.time() - started, used_client=bool(client_excerpt),
             invent_risk=getattr(thought, "invent_risk", "") if thought else "",
+            asked_by=asked_by,
         )
     return grounded, results
 

@@ -41,6 +41,23 @@ def list_learn_docs():
     return files
 
 
+
+def _who(handler, capability: str):
+    """(user, why not) for this request. Identity comes from the credential.
+
+    Kept here rather than on the handler so that a route added later has to go
+    through the same two questions — who is this, and may they — instead of
+    trusting whatever the body says about itself.
+    """
+    import desk_users
+    peer = ""
+    try:
+        peer = str(handler.client_address[0])
+    except Exception:
+        peer = ""
+    return desk_users.require(peer, handler.headers, capability)
+
+
 def handle_get(handler, parts) -> bool:
     # The PDF workbench owns /api/pdf/*. It only ever reads a filed document
     # and writes a new draft; it cannot modify what it opens.
@@ -65,7 +82,7 @@ def handle_get(handler, parts) -> bool:
         })
         return True
 
-    if parts == ["api", "documents"]:
+    if parts == ["api", "register"]:
         import doc_register
         docs = doc_register.register()
         handler.send_json({
@@ -84,6 +101,21 @@ def handle_get(handler, parts) -> bool:
             } for d in docs],
             "awaiting_approval": [d.source for d in docs
                                   if d.governed and not d.approved],
+        })
+        return True
+
+    if parts == ["api", "users"]:
+        import desk_users
+        # No tokens here, ever — only their hashes are stored, and a listing
+        # that could hand them back would be worth stealing.
+        handler.send_json({
+            "directory": desk_users.any_users(),
+            "roles": {r: sorted(c) for r, c in desk_users.CAPABILITIES.items()},
+            "users": [{"id": u.id, "name": u.name, "role": u.role,
+                       "active": u.active, "created_at": u.created_at,
+                       "disabled_at": u.disabled_at, "note": u.note}
+                      for u in desk_users.everyone()],
+            "you": getattr(getattr(handler, "desk_user", None), "name", ""),
         })
         return True
 
@@ -164,20 +196,29 @@ def handle_post(handler, parts, body) -> bool:
                           200 if ok else 404)
         return True
 
-    if parts == ["api", "documents", "approve"]:
+    if parts == ["api", "register", "approve"]:
         import doc_register
-        # The name is the approval. An approval with nobody's name on it is a
-        # checkbox, and a compliance officer will read it as one.
+        # The approver is taken from the credential, never from the body. A
+        # name the caller supplies is a claim; the register's whole value is
+        # that "who read this document" is a fact.
+        user, why = _who(handler, "approve_documents")
+        if user is None:
+            handler.send_json({"error": why}, 403)
+            return True
         ok, msg = doc_register.approve(
-            str(body.get("source") or ""), str(body.get("by") or ""),
+            str(body.get("source") or ""), user.name,
             str(body.get("sha256") or ""), str(body.get("origin") or ""),
             str(body.get("note") or ""))
         handler.send_json({"ok": ok, "message": msg}, 200 if ok else 400)
         return True
-    if parts == ["api", "documents", "withdraw"]:
+    if parts == ["api", "register", "withdraw"]:
         import doc_register
+        user, why = _who(handler, "approve_documents")
+        if user is None:
+            handler.send_json({"error": why}, 403)
+            return True
         ok, msg = doc_register.withdraw(
-            str(body.get("source") or ""), str(body.get("by") or ""),
+            str(body.get("source") or ""), user.name,
             str(body.get("reason") or ""))
         handler.send_json({"ok": ok, "message": msg}, 200 if ok else 400)
         return True

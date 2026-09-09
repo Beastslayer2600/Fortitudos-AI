@@ -235,7 +235,20 @@ class Handler(BaseHTTPRequestHandler):
         allowed, why = desk_auth.check(peer, parts, self.headers)
         if not allowed:
             self.send_json({"error": why}, 401)
-        return allowed
+            return False
+        # Two questions, not one: may this request in, and may this person do
+        # this. On a desk with no user directory the second always passes, so
+        # nothing changes for a single adviser.
+        if desk_auth.is_public_path(parts):
+            return True
+        import desk_users
+        user, refused = desk_users.require(
+            peer, self.headers, desk_users.capability_for(parts))
+        if user is None:
+            self.send_json({"error": refused}, 403)
+            return False
+        self.desk_user = user
+        return True
 
     def do_GET(self):
         parts = [unquote(x) for x in urlparse(self.path).path.strip("/").split("/") if x]
@@ -470,6 +483,9 @@ class Handler(BaseHTTPRequestHandler):
                 text, results = ask_mod.answer(
                     conn, question, history=history, client_excerpt=excerpt, room=room,
                     client_id=client_id,
+                    # From the credential, so the audit trail records who asked
+                    # rather than who said they were asking.
+                    asked_by=getattr(getattr(self, "desk_user", None), "name", ""),
                 )
                 # The log row this answer became, so the desk can mark it
                 # right or wrong without the adviser hunting for an id.

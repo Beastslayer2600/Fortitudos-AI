@@ -117,10 +117,12 @@ python doc_register.py withdraw "old_guide.pdf" --by "M. Naidoo" \
 python doc_register.py history "lifestyle_guide.pdf"
 ```
 
-Over HTTP: `GET /api/documents`, `POST /api/documents/approve`,
-`POST /api/documents/withdraw`. An approval with no name against it is refused
-in both places — an approval nobody signed is a checkbox, and it will be read
-as one.
+Over HTTP: `GET /api/register`, `POST /api/register/approve`,
+`POST /api/register/withdraw`. **The approver is taken from the credential the
+request carries, never from a name in the request body** — a name the caller
+supplies is a claim, and the register's whole value is that "who read this
+document" is a fact. Approving requires the `approve_documents` capability; see
+`ACCESS.md`.
 
 ## How it reaches the audit trail
 

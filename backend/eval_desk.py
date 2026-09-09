@@ -227,6 +227,89 @@ def score_governance(verbose=False) -> Score:
     return s
 
 
+def score_access(verbose=False) -> Score:
+    """Who the desk thinks is asking, and what that lets them do.
+
+    The property worth evaluating is not "is there a login". It is that the
+    name attached to an approval comes from the credential rather than from
+    the request, because an audit trail recording a name the caller supplied
+    records a claim and not a fact.
+    """
+    import os, tempfile
+    from pathlib import Path as P
+    import desk_users as du
+
+    class H(dict):
+        def get(self, k, default=None):
+            return dict.get(self, k, default)
+
+    def hdr(tok=""):
+        return H({"Authorization": f"Bearer {tok}"} if tok else {})
+
+    s = Score("access control")
+    keep_db = du.USERS_DB
+    saved = {k: os.environ.get(k) for k in
+             ("FORTITUDO_LOCAL_ROLE", "FORTITUDO_DESK_TOKEN")}
+    with tempfile.TemporaryDirectory() as tmp:
+        du.USERS_DB = P(tmp) / "users.db"
+        for k in saved:
+            os.environ.pop(k, None)
+        try:
+            s.check(du.identify("127.0.0.1", hdr()) is not None,
+                    "a desk with no directory stopped trusting its own keyboard")
+            os.environ["FORTITUDO_DESK_TOKEN"] = "shared"
+            s.check(du.identify("10.0.0.5", hdr("shared")) is not None,
+                    "the shared token stopped working on a single-adviser desk")
+
+            adviser, at = du.add("An Adviser", du.ADVISER)
+            officer, ot = du.add("An Officer", du.APPROVER)
+            s.check(du.identify("10.0.0.5", hdr(at)).id == adviser.id,
+                    "a named user was not identified by their own token")
+            s.check(du.identify("10.0.0.5", hdr("shared")) is None,
+                    "the shared token still worked once a directory existed")
+            s.check(du.identify("127.0.0.1", hdr()) is None,
+                    "being at the keyboard was still an identity")
+
+            s.check(du.require("10.0.0.5", hdr(at), "approve_documents")[0] is None,
+                    "an adviser could approve a product document")
+            s.check(du.require("10.0.0.5", hdr(ot), "approve_documents")[0] is not None,
+                    "an approver could not approve a product document")
+            s.check(du.require("10.0.0.5", hdr(ot), "clients")[0] is None,
+                    "an approver could open a client's file")
+            s.check(du.require("10.0.0.5", hdr(at), "manage_users")[0] is None,
+                    "an adviser could manage users")
+
+            du.disable(officer.id)
+            s.check(du.identify("10.0.0.5", hdr(ot)) is None,
+                    "a disabled user still got in")
+            s.check(du.get(officer.id) is not None,
+                    "disabling deleted the person their approvals point at")
+
+            raw = P(du.USERS_DB).read_bytes()
+            s.check(at.encode() not in raw, "a token was stored in the clear")
+
+            s.check(du.capability_for(["api", "clients", "x"]) == "clients"
+                    and du.capability_for(["api", "documents", "d"]) == "clients"
+                    and du.capability_for(["api", "register", "approve"])
+                    == "approve_documents"
+                    and du.capability_for(["api", "anything"]) == "ask",
+                    "a route mapped to the wrong capability")
+            approve = P("desk_extra.py").read_text(encoding="utf-8")
+            approve = approve[approve.index('["api", "register", "approve"]'):]
+            approve = approve[:approve.index('["api", "register", "withdraw"]')]
+            s.check('body.get("by")' not in approve and "user.name" in approve,
+                    "the approver's name came from the request body")
+            if verbose:
+                print(du.render())
+        finally:
+            du.USERS_DB = keep_db
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+    return s
+
+
 def score_backup(verbose=False) -> Score:
     """The properties that separate a backup from a hope."""
     import sqlite3, tempfile
@@ -436,6 +519,7 @@ def main() -> int:
         score_backup(args.verbose),
         score_filing(args.verbose),
         score_governance(args.verbose),
+        score_access(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))

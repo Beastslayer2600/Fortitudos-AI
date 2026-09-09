@@ -119,6 +119,14 @@ def check(peer: str, parts: Sequence[str], headers) -> Tuple[bool, str]:
 
     token = desk_token()
     if not token:
+        # A desk with a user directory does not need a shared token; a named
+        # user's own credential is the credential.
+        try:
+            import desk_users
+            if desk_users.by_token(bearer(headers)) is not None:
+                return True, ""
+        except Exception:
+            pass
         return False, (
             "This desk is reachable from the network but no token is set, so "
             "it refuses remote requests. On the desk machine set "
@@ -130,4 +138,14 @@ def check(peer: str, parts: Sequence[str], headers) -> Tuple[bool, str]:
     # was right.
     if offered and hmac.compare_digest(offered, token):
         return True, ""
+    # A named user's own token gets them in too. This layer only decides
+    # whether the request may reach a route at all; what they may then do is
+    # desk_users.require(), per route, per capability.
+    if offered:
+        try:
+            import desk_users
+            if desk_users.by_token(offered) is not None:
+                return True, ""
+        except Exception:
+            pass
     return False, "Not authorised. Send the desk token as: Authorization: Bearer <token>"

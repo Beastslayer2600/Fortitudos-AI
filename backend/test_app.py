@@ -2455,6 +2455,225 @@ class NobodyDecidesWhatTheDeskLearnsByThemselves(unittest.TestCase):
         self.reg.record_ingest("guide.pdf", "sha-v4", 10)
         self.assertIn("LAPSED", self.reg.render())
 
+def _source(name: str) -> str:
+    """Read a backend module as text, from wherever pytest was started.
+
+    A relative path here passes when the suite is run inside backend/ and fails
+    from the repo root, which makes the test about the working directory rather
+    than about the code.
+    """
+    return (Path(__file__).parent / name).read_text(encoding="utf-8")
+
+
+class TheDeskKnowsWhoIsAsking(unittest.TestCase):
+    """One shared token answers "may this request in?" and nothing else.
+
+    The gap it leaves is specific: doc_register.approve takes the approver's
+    name from the caller, so anyone holding the shared token could record an
+    approval under anyone's name — leaving the register's most important field
+    the one field nothing checked.
+    """
+
+    def setUp(self):
+        import desk_users, tempfile
+        self.u = desk_users
+        self.tmp = tempfile.TemporaryDirectory()
+        self._db = desk_users.USERS_DB
+        desk_users.USERS_DB = Path(self.tmp.name) / "users.db"
+        self._saved = {k: os.environ.get(k) for k in
+                       ("FORTITUDO_LOCAL_ROLE", "FORTITUDO_LOCAL_NAME",
+                        "FORTITUDO_DESK_TOKEN")}
+        for k in self._saved:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        self.u.USERS_DB = self._db
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    class _Headers(dict):
+        def get(self, k, default=None):
+            return dict.get(self, k, default)
+
+    def _hdr(self, token=""):
+        return self._Headers({"Authorization": f"Bearer {token}"} if token else {})
+
+    # --- nothing changes for one person on one laptop ------------------------
+
+    def test_with_no_directory_the_local_desk_works_exactly_as_before(self):
+        """A control that made a single adviser run a user directory first
+        would simply never be switched on."""
+        self.assertFalse(self.u.any_users())
+        who = self.u.identify("127.0.0.1", self._hdr())
+        self.assertIsNotNone(who)
+        self.assertTrue(who.may("ask"))
+        self.assertTrue(who.may("approve_documents"))
+
+    def test_the_local_owner_can_be_narrowed(self):
+        os.environ["FORTITUDO_LOCAL_ROLE"] = "adviser"
+        self.assertFalse(self.u.identify("127.0.0.1", self._hdr()).may("approve_documents"))
+
+    def test_a_nonsense_local_role_does_not_silently_lock_the_owner_out(self):
+        os.environ["FORTITUDO_LOCAL_ROLE"] = "aproover"
+        self.assertEqual(self.u.local_role(), self.u.ADMIN)
+
+    # --- once there is a directory, the keyboard is not an identity ----------
+
+    def test_being_at_the_keyboard_stops_being_an_identity(self):
+        """Whoever walks up to the machine is not automatically the approver."""
+        self.u.add("A Adviser", self.u.ADVISER)
+        self.assertIsNone(self.u.identify("127.0.0.1", self._hdr()))
+
+    def test_a_named_user_is_identified_by_their_own_token(self):
+        user, token = self.u.add("A Adviser", self.u.ADVISER)
+        found = self.u.identify("10.0.0.5", self._hdr(token))
+        self.assertEqual(found.id, user.id)
+        self.assertEqual(found.name, "A Adviser")
+
+    def test_a_wrong_token_is_nobody(self):
+        self.u.add("A Adviser", self.u.ADVISER)
+        self.assertIsNone(self.u.identify("10.0.0.5", self._hdr("not-the-token")))
+
+    def test_the_shared_token_stops_being_an_identity_once_users_exist(self):
+        """Otherwise the directory is decoration: the old key still opens
+        everything, under nobody's name."""
+        os.environ["FORTITUDO_DESK_TOKEN"] = "shared-secret"
+        self.assertIsNotNone(self.u.identify("10.0.0.5", self._hdr("shared-secret")))
+        self.u.add("A Adviser", self.u.ADVISER)
+        self.assertIsNone(self.u.identify("10.0.0.5", self._hdr("shared-secret")))
+
+    # --- the token itself ----------------------------------------------------
+
+    def test_only_the_hash_is_stored(self):
+        """A stolen copy of the directory must not be a set of working keys."""
+        _user, token = self.u.add("A Adviser")
+        raw = Path(self.u.USERS_DB).read_bytes()
+        self.assertNotIn(token.encode(), raw)
+        self.assertIn(self.u.token_sha(token).encode(), raw)
+
+    def test_two_users_get_different_tokens(self):
+        _a, ta = self.u.add("One")
+        _b, tb = self.u.add("Two")
+        self.assertNotEqual(ta, tb)
+
+    def test_a_disabled_user_is_nobody(self):
+        user, token = self.u.add("A Adviser")
+        self.u.disable(user.id)
+        self.assertIsNone(self.u.identify("10.0.0.5", self._hdr(token)))
+
+    def test_disabling_does_not_delete_the_person(self):
+        """Their name is attached to approvals and to answers that happened."""
+        user, _token = self.u.add("A Adviser")
+        self.u.disable(user.id)
+        still = self.u.get(user.id)
+        self.assertIsNotNone(still)
+        self.assertEqual(still.name, "A Adviser")
+        self.assertFalse(still.active)
+
+    def test_a_user_needs_a_name(self):
+        self.assertIsNone(self.u.add("   ")[0])
+
+    def test_an_unknown_role_is_refused_rather_than_defaulted(self):
+        """Silently downgrading a typo'd role would hand out the wrong access
+        and look like it worked."""
+        self.assertIsNone(self.u.add("Someone", role="superuser")[0])
+
+    # --- what each role may do ----------------------------------------------
+
+    def test_an_adviser_may_not_approve_documents(self):
+        user, token = self.u.add("A Adviser", self.u.ADVISER)
+        who, why = self.u.require("10.0.0.5", self._hdr(token), "approve_documents")
+        self.assertIsNone(who)
+        self.assertIn("adviser", why)
+
+    def test_an_approver_may_not_open_client_files(self):
+        """They sign off product documents. A client's file is not theirs."""
+        _user, token = self.u.add("A Compliance Officer", self.u.APPROVER)
+        self.assertIsNone(self.u.require("10.0.0.5", self._hdr(token), "clients")[0])
+        self.assertIsNotNone(
+            self.u.require("10.0.0.5", self._hdr(token), "approve_documents")[0])
+
+    def test_only_an_admin_manages_users(self):
+        for role in (self.u.ADVISER, self.u.APPROVER):
+            _u, t = self.u.add(f"{role} person", role)
+            self.assertIsNone(self.u.require("10.0.0.5", self._hdr(t), "manage_users")[0])
+        _a, ta = self.u.add("An Admin", self.u.ADMIN)
+        self.assertIsNotNone(self.u.require("10.0.0.5", self._hdr(ta), "manage_users")[0])
+
+    def test_every_role_has_a_declared_capability_set(self):
+        """A role with no entry would silently be allowed nothing, which reads
+        as a broken login rather than as a policy."""
+        for role in self.u.ROLES:
+            self.assertIn(role, self.u.CAPABILITIES)
+            self.assertTrue(self.u.CAPABILITIES[role])
+
+    # --- the routes are covered by the table, not one by one ----------------
+
+    def test_the_client_routes_need_the_client_capability(self):
+        for path in (["api", "clients"], ["api", "clients", "abc"],
+                     ["api", "documents", "doc-1"]):
+            self.assertEqual(self.u.capability_for(path), "clients")
+
+    def test_approving_needs_more_than_reading_the_register(self):
+        self.assertEqual(self.u.capability_for(["api", "register"]), "documents")
+        self.assertEqual(self.u.capability_for(["api", "register", "approve"]),
+                         "approve_documents")
+        self.assertEqual(self.u.capability_for(["api", "register", "withdraw"]),
+                         "approve_documents")
+
+    def test_an_unlisted_route_falls_back_to_the_lowest_capability(self):
+        """Not to no capability: a route nobody classified must still be
+        behind something."""
+        self.assertEqual(self.u.capability_for(["api", "something", "new"]), "ask")
+        self.assertTrue(self.u.CAPABILITIES[self.u.ADVISER] >= {"ask"})
+
+    def test_the_capability_check_runs_before_any_route(self):
+        import app, inspect
+        src = inspect.getsource(app.DeskHandler._authorised
+                                if hasattr(app, "DeskHandler") else app.Handler._authorised)
+        self.assertIn("capability_for", src)
+        self.assertIn("desk_users.require", src)
+
+    def test_the_register_endpoints_no_longer_collide_with_client_documents(self):
+        """GET /api/documents/<id> serves a client's file. The register had to
+        move or one of the two would shadow the other."""
+        src = _source("desk_extra.py")
+        self.assertIn('["api", "register"]', src)
+        self.assertNotIn('["api", "documents", "approve"]', src)
+
+    # --- the hole this closes ------------------------------------------------
+
+    def test_the_approver_comes_from_the_credential_not_the_body(self):
+        """A name in the request body is a claim. The register's value is that
+        'who read this document' is a fact."""
+        src = _source("desk_extra.py")
+        approve = src[src.index('["api", "register", "approve"]'):]
+        approve = approve[:approve.index('["api", "register", "withdraw"]')]
+        self.assertIn("user.name", approve)
+        self.assertNotIn('body.get("by")', approve)
+
+    def test_the_answer_log_records_who_asked(self):
+        import answer_log, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            keep = answer_log.LOG_DB
+            answer_log.LOG_DB = Path(d) / "answers.db"
+            try:
+                rid = answer_log.record(question="q", answer="a", room="fa",
+                                        results=[], asked_by="A Adviser")
+                self.assertEqual(answer_log.get(rid)["asked_by"], "A Adviser")
+            finally:
+                answer_log.LOG_DB = keep
+
+    def test_the_ask_route_takes_the_asker_from_the_credential(self):
+        src = _source("app.py")
+        call = src[src.index("ask_mod.answer("):]
+        call = call[:call.index(")\n")]
+        self.assertIn("desk_user", call)
+
 
 if __name__ == "__main__":
     unittest.main()

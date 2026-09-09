@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS answers (
     version_clash INTEGER DEFAULT 0,
     -- The answer leaned on a document nobody has approved.
     unapproved    INTEGER DEFAULT 0,
+    -- Who asked. Empty on a single-adviser desk, where there is only one
+    -- person and the question does not arise.
+    asked_by      TEXT DEFAULT '',
     invent_risk   TEXT DEFAULT '',
     -- The adviser's verdict, added after the fact. NULL until marked.
     verdict       TEXT DEFAULT '',
@@ -96,7 +99,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     throw away the thing being built.
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(answers)").fetchall()}
-    for name, ddl in (("unapproved", "INTEGER DEFAULT 0"),):
+    for name, ddl in (("unapproved", "INTEGER DEFAULT 0"),
+                      ("asked_by", "TEXT DEFAULT ''")):
         if name not in cols:
             conn.execute(f"ALTER TABLE answers ADD COLUMN {name} {ddl}")
     conn.commit()
@@ -124,7 +128,7 @@ def _sources(results: Sequence) -> List[Dict[str, Any]]:
 def record(*, question: str, answer: str, room: str, results: Sequence,
            client_id: str = "", as_of: str = "", model: str = "",
            seconds: float = 0.0, used_client: bool = False,
-           invent_risk: str = "") -> int:
+           invent_risk: str = "", asked_by: str = "") -> int:
     """Write one answer to the log. Returns its id.
 
     Never raises into the answer path: a desk that cannot answer because its
@@ -141,8 +145,8 @@ def record(*, question: str, answer: str, room: str, results: Sequence,
         cur = conn.execute(
             "INSERT INTO answers (asked_at, room, question, answer, client_id, "
             "as_of, snapshot, sources_json, model, seconds, used_client, "
-            "span_flagged, version_clash, unapproved, invent_risk) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "span_flagged, version_clash, unapproved, invent_risk, asked_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 room or "",
@@ -159,6 +163,7 @@ def record(*, question: str, answer: str, room: str, results: Sequence,
                 1 if "[VERSIONS]" in text else 0,
                 1 if "[UNAPPROVED]" in text else 0,
                 invent_risk or "",
+                asked_by or "",
             ),
         )
         conn.commit()
