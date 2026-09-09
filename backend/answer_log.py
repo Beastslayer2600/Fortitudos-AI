@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS answers (
     -- Flags the desk raised on itself, so they are countable later.
     span_flagged  INTEGER DEFAULT 0,
     version_clash INTEGER DEFAULT 0,
+    -- The answer leaned on a document nobody has approved.
+    unapproved    INTEGER DEFAULT 0,
     invent_risk   TEXT DEFAULT '',
     -- The adviser's verdict, added after the fact. NULL until marked.
     verdict       TEXT DEFAULT '',
@@ -83,7 +85,21 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(LOG_DB)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns to a log that already has rows in it.
+
+    The log is the evidence; dropping and recreating it to gain a column would
+    throw away the thing being built.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(answers)").fetchall()}
+    for name, ddl in (("unapproved", "INTEGER DEFAULT 0"),):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE answers ADD COLUMN {name} {ddl}")
+    conn.commit()
 
 
 def _sources(results: Sequence) -> List[Dict[str, Any]]:
@@ -125,8 +141,8 @@ def record(*, question: str, answer: str, room: str, results: Sequence,
         cur = conn.execute(
             "INSERT INTO answers (asked_at, room, question, answer, client_id, "
             "as_of, snapshot, sources_json, model, seconds, used_client, "
-            "span_flagged, version_clash, invent_risk) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "span_flagged, version_clash, unapproved, invent_risk) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 room or "",
@@ -141,6 +157,7 @@ def record(*, question: str, answer: str, room: str, results: Sequence,
                 1 if used_client else 0,
                 1 if "[SPAN-CHECK]" in text else 0,
                 1 if "[VERSIONS]" in text else 0,
+                1 if "[UNAPPROVED]" in text else 0,
                 invent_risk or "",
             ),
         )
@@ -204,6 +221,7 @@ class Report:
     unmarked: int = 0
     span_flagged: int = 0
     version_clash: int = 0
+    unapproved: int = 0
     high_risk: int = 0
     as_of_questions: int = 0
     client_questions: int = 0
@@ -254,6 +272,7 @@ def report(days: int = 7) -> Report:
             rep.unmarked += 1
         rep.span_flagged += int(row["span_flagged"] or 0)
         rep.version_clash += int(row["version_clash"] or 0)
+        rep.unapproved += int(row["unapproved"] or 0)
         rep.high_risk += 1 if (row["invent_risk"] or "") == "high" else 0
         rep.client_questions += int(row["used_client"] or 0)
         rep.seconds += float(row["seconds"] or 0)
@@ -288,6 +307,7 @@ def render(rep: Report) -> str:
                      "   mark a few with --mark; an unmeasured rate is not zero")
     for label, value in (("desk removed a figure", rep.span_flagged),
                          ("rival document versions", rep.version_clash),
+                         ("unapproved document cited", rep.unapproved),
                          ("desk flagged high risk", rep.high_risk)):
         lines.append(f"  {('  ' + label):28} {value:>6}")
 

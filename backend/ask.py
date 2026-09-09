@@ -127,6 +127,15 @@ def answer(conn, question, history=None, client_excerpt="", room="", client_id="
     # either. Say so rather than let a real citation vouch for the wrong number.
     grounded += version_note(results)
 
+    # A citation looks like authority whether or not anyone checked the
+    # document. Where nobody has, the answer says so rather than borrowing
+    # credibility from the format.
+    try:
+        from doc_register import provenance_note
+        grounded += provenance_note(results)
+    except Exception:
+        pass
+
     # The reasoning pass rates its own risk of inventing. A high rating is worth
     # the adviser's attention precisely because the answer will not look wrong.
     if thought is not None and getattr(thought, "invent_risk", "low") == "high":

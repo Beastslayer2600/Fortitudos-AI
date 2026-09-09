@@ -2224,6 +2224,236 @@ class TheIndexKnowsWhenItLearnedAPage(unittest.TestCase):
                       if hasattr(store, "_migrate") else
                       Path(store.__file__).read_text(encoding="utf-8"))
 
+class NobodyDecidesWhatTheDeskLearnsByThemselves(unittest.TestCase):
+    """Ingestion governance: approval is of a document, not of a filename.
+
+    The control an FSP asks for is not "is there a register" — it is "does the
+    register stop saying approved when the document changes". These tests are
+    mostly about that one sentence.
+    """
+
+    def setUp(self):
+        import doc_register, tempfile
+        self.reg = doc_register
+        self.tmp = tempfile.TemporaryDirectory()
+        self._db = doc_register.REGISTER_DB
+        self._mode = os.environ.get("FORTITUDO_INGEST_MODE")
+        doc_register.REGISTER_DB = Path(self.tmp.name) / "documents.db"
+        os.environ.pop("FORTITUDO_INGEST_MODE", None)
+
+    def tearDown(self):
+        self.reg.REGISTER_DB = self._db
+        if self._mode is None:
+            os.environ.pop("FORTITUDO_INGEST_MODE", None)
+        else:
+            os.environ["FORTITUDO_INGEST_MODE"] = self._mode
+        self.tmp.cleanup()
+
+    def _file(self, name, text):
+        p = Path(self.tmp.name) / name
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    # --- the fingerprint is the control -------------------------------------
+
+    def test_a_fingerprint_is_of_the_bytes_not_the_name(self):
+        a, b = self._file("g.md", "one"), self._file("h.md", "one")
+        self.assertEqual(self.reg.fingerprint(a), self.reg.fingerprint(b))
+        b.write_text("two", encoding="utf-8")
+        self.assertNotEqual(self.reg.fingerprint(a), self.reg.fingerprint(b))
+
+    def test_an_approval_lapses_when_the_document_changes(self):
+        """The whole point. Approving v3 must not vouch for v4."""
+        self.reg.record_ingest("guide.pdf", "sha-v3", 10)
+        self.assertTrue(self.reg.approve("guide.pdf", "A Compliance Officer")[0])
+        self.assertTrue(self.reg.get("guide.pdf").approved)
+        self.reg.record_ingest("guide.pdf", "sha-v4", 11)      # file swapped
+        doc = self.reg.get("guide.pdf")
+        self.assertFalse(doc.approved)
+        self.assertTrue(doc.lapsed)
+
+    def test_a_document_that_was_never_approved_has_not_lapsed(self):
+        """Two different facts. Only a lapse means somebody should be told."""
+        self.reg.record_ingest("guide.pdf", "sha", 1)
+        self.assertFalse(self.reg.get("guide.pdf").approved)
+        self.assertFalse(self.reg.get("guide.pdf").lapsed)
+
+    def test_withdrawing_does_not_erase_who_approved_it(self):
+        self.reg.record_ingest("guide.pdf", "sha", 1)
+        self.reg.approve("guide.pdf", "A Compliance Officer")
+        self.reg.withdraw("guide.pdf", "Someone Else", "recalled")
+        self.assertEqual(self.reg.get("guide.pdf").approved_by,
+                         "A Compliance Officer")
+
+    def test_the_lapse_is_recorded_not_erased(self):
+        """A register that cannot say what was approved when is no use at review."""
+        self.reg.record_ingest("guide.pdf", "sha-v3", 10)
+        self.reg.approve("guide.pdf", "A Compliance Officer", note="read it")
+        self.reg.record_ingest("guide.pdf", "sha-v4", 11)
+        events = [e["event"] for e in self.reg.history("guide.pdf")]
+        self.assertIn("approved", events)
+        self.assertIn("superseded", events)
+        old = [e for e in self.reg.history("guide.pdf") if e["event"] == "approved"][0]
+        self.assertEqual(old["sha256"], "sha-v3")
+        self.assertEqual(old["actor"], "A Compliance Officer")
+
+    def test_you_cannot_approve_a_document_the_desk_is_not_answering_from(self):
+        self.reg.record_ingest("guide.pdf", "sha-v4", 10)
+        ok, msg = self.reg.approve("guide.pdf", "Officer", sha="sha-v3")
+        self.assertFalse(ok)
+        self.assertIn("not the one indexed", msg)
+
+    def test_an_approval_needs_a_name_on_it(self):
+        self.reg.record_ingest("guide.pdf", "sha", 1)
+        self.assertFalse(self.reg.approve("guide.pdf", "  ")[0])
+
+    def test_approving_something_unheard_of_is_refused(self):
+        ok, msg = self.reg.approve("never-seen.pdf", "Officer")
+        self.assertFalse(ok)
+        self.assertIn("not in the register", msg)
+
+    # --- the two modes ------------------------------------------------------
+
+    def test_open_mode_indexes_an_unapproved_document(self):
+        """The adviser's own guides are useful before anyone signs them off."""
+        self.assertEqual(self.reg.mode(), "open")
+        self.assertTrue(self.reg.may_ingest("guide.pdf", "sha")[0])
+
+    def test_controlled_mode_refuses_one(self):
+        os.environ["FORTITUDO_INGEST_MODE"] = "controlled"
+        allowed, why = self.reg.may_ingest("guide.pdf", "sha")
+        self.assertFalse(allowed)
+        self.assertIn("register", why)
+
+    def test_controlled_mode_refuses_a_changed_file_that_was_approved(self):
+        os.environ["FORTITUDO_INGEST_MODE"] = "controlled"
+        self.reg.record_ingest("guide.pdf", "sha-v3", 10)
+        self.reg.approve("guide.pdf", "Officer")
+        allowed, why = self.reg.may_ingest("guide.pdf", "sha-v4")
+        self.assertFalse(allowed)
+        self.assertIn("changed", why)
+
+    def test_controlled_mode_admits_the_approved_document(self):
+        os.environ["FORTITUDO_INGEST_MODE"] = "controlled"
+        self.reg.record_ingest("guide.pdf", "sha-v3", 10)
+        self.reg.approve("guide.pdf", "Officer")
+        self.assertTrue(self.reg.may_ingest("guide.pdf", "sha-v3")[0])
+
+    def test_a_withdrawn_document_stays_out(self):
+        os.environ["FORTITUDO_INGEST_MODE"] = "controlled"
+        self.reg.record_ingest("guide.pdf", "sha", 10)
+        self.reg.approve("guide.pdf", "Officer")
+        self.reg.withdraw("guide.pdf", "Officer", "recalled by the insurer")
+        self.assertFalse(self.reg.may_ingest("guide.pdf", "sha")[0])
+
+    def test_an_unknown_mode_falls_back_to_open_not_to_nothing(self):
+        """A typo in a setting must not silently stop the desk learning."""
+        os.environ["FORTITUDO_INGEST_MODE"] = "Controled"
+        self.assertEqual(self.reg.mode(), "open")
+
+    def test_the_mode_setting_is_case_and_space_tolerant(self):
+        os.environ["FORTITUDO_INGEST_MODE"] = "  CONTROLLED "
+        self.assertEqual(self.reg.mode(), "controlled")
+
+    # --- what is governed, and what is not ----------------------------------
+
+    def test_a_client_file_is_not_a_product_document(self):
+        """Nobody signs off a client's own FNA. It is evidence about them."""
+        self.assertEqual(self.reg.kind_of("client:abc:fna.pdf"), self.reg.CLIENT)
+        self.assertEqual(self.reg.kind_of("learn:craft:lesson.md"), self.reg.LEARN)
+        self.assertEqual(self.reg.kind_of("lifestyle_guide.pdf"), self.reg.PRODUCT)
+
+    def test_controlled_mode_does_not_block_client_documents(self):
+        os.environ["FORTITUDO_INGEST_MODE"] = "controlled"
+        self.assertTrue(self.reg.may_ingest("client:abc:fna.pdf", "sha")[0])
+        self.assertTrue(self.reg.may_ingest("learn:craft:l.md", "sha")[0])
+
+    def test_only_product_documents_count_as_unapproved(self):
+        self.reg.record_ingest("client:abc:fna.pdf", "s1", 1)
+        self.reg.record_ingest("guide.pdf", "s2", 1)
+        self.assertEqual(self.reg.unapproved_sources(
+            ["client:abc:fna.pdf", "guide.pdf"]), ["guide.pdf"])
+
+    # --- silence is not an approval -----------------------------------------
+
+    def test_a_source_the_register_never_heard_of_is_unapproved(self):
+        self.assertEqual(self.reg.unapproved_sources(["mystery.pdf"]), ["mystery.pdf"])
+
+    def test_an_approved_document_drops_out_of_the_warning(self):
+        self.reg.record_ingest("guide.pdf", "sha", 1)
+        self.reg.approve("guide.pdf", "Officer")
+        self.assertEqual(self.reg.unapproved_sources(["guide.pdf"]), [])
+
+    def test_the_answer_says_when_it_leaned_on_an_unapproved_document(self):
+        results = [((1, "guide.pdf", 4, "text", "hash"), 0.9)]
+        note = self.reg.provenance_note(results)
+        self.assertIn("[UNAPPROVED]", note)
+        self.assertIn("guide.pdf", note)
+
+    def test_an_approved_answer_carries_no_warning(self):
+        self.reg.record_ingest("guide.pdf", "sha", 1)
+        self.reg.approve("guide.pdf", "Officer")
+        results = [((1, "guide.pdf", 4, "text", "hash"), 0.9)]
+        self.assertEqual(self.reg.provenance_note(results), "")
+
+    def test_ask_appends_the_provenance_note_itself(self):
+        """Not left to each caller to remember."""
+        import ask, inspect
+        src = inspect.getsource(ask.answer)
+        self.assertIn("provenance_note", src)
+        self.assertLess(src.index("provenance_note"), src.index("draft_banner"))
+
+    def test_ingest_checks_before_it_embeds(self):
+        """A refusal after the embedding work is a refusal that costs money."""
+        import ingest, inspect
+        src = inspect.getsource(ingest.ingest_file)
+        # The call site, not the word: the comment above the guard says
+        # "embedding" and would otherwise satisfy this test by itself.
+        self.assertLess(src.index("may_ingest"), src.index("vectors = embed("))
+        self.assertIn("record_ingest", src)
+
+    def test_the_flag_is_countable_in_the_answer_log(self):
+        """Evidence has to be counted, not just printed once and lost."""
+        import answer_log, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            keep = answer_log.LOG_DB
+            answer_log.LOG_DB = Path(d) / "answers.db"
+            try:
+                answer_log.record(question="q", answer="a [UNAPPROVED] x",
+                                  room="fa", results=[])
+                answer_log.record(question="q", answer="clean", room="fa", results=[])
+                self.assertEqual(answer_log.report(7).unapproved, 1)
+            finally:
+                answer_log.LOG_DB = keep
+
+    def test_the_log_gains_the_column_without_losing_its_rows(self):
+        """The log IS the evidence — it cannot be rebuilt to gain a column."""
+        import answer_log, sqlite3, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            keep = answer_log.LOG_DB
+            answer_log.LOG_DB = Path(d) / "answers.db"
+            try:
+                old = answer_log.SCHEMA.replace(
+                    "    -- The answer leaned on a document nobody has approved.\n"
+                    "    unapproved    INTEGER DEFAULT 0,\n", "")
+                self.assertNotIn("unapproved", old)
+                conn = sqlite3.connect(answer_log.LOG_DB)
+                conn.executescript(old)
+                conn.execute("INSERT INTO answers (asked_at, room, question, answer) "
+                             "VALUES ('2026-01-01','fa','q','a')")
+                conn.commit()
+                conn.close()
+                self.assertEqual(answer_log.report(3650).total, 1)
+            finally:
+                answer_log.LOG_DB = keep
+
+    def test_the_register_names_a_lapsed_approval_as_such(self):
+        """'UNAPPROVED' and 'was approved until someone swapped the file' are
+        different facts, and only the second one needs chasing."""
+        self.reg.record_ingest("guide.pdf", "sha-v3", 10)
+        self.reg.approve("guide.pdf", "Officer")
+        self.reg.record_ingest("guide.pdf", "sha-v4", 10)
+        self.assertIn("LAPSED", self.reg.render())
 
 
 if __name__ == "__main__":

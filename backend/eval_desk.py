@@ -171,6 +171,62 @@ def score_filing(verbose=False) -> Score:
     return s
 
 
+def score_governance(verbose=False) -> Score:
+    """Who decides what the desk learns, and whether the register can lie.
+
+    The single property worth evaluating: a register that keeps saying
+    "approved" after the document changed is worse than no register, because
+    it certifies the wrong document rather than nothing.
+    """
+    import os, tempfile
+    from pathlib import Path as P
+    import doc_register as dr
+
+    s = Score("ingest governance")
+    keep_db, keep_mode = dr.REGISTER_DB, os.environ.get("FORTITUDO_INGEST_MODE")
+    with tempfile.TemporaryDirectory() as tmp:
+        dr.REGISTER_DB = P(tmp) / "documents.db"
+        os.environ.pop("FORTITUDO_INGEST_MODE", None)
+        try:
+            src = "guide.pdf"
+            dr.record_ingest(src, "sha-v3", 10)
+            s.check(not dr.get(src).approved, "a fresh document arrived pre-approved")
+            s.check(dr.unapproved_sources(["never-seen.pdf"]) == ["never-seen.pdf"],
+                    "a document the register never heard of counted as approved")
+
+            ok, _ = dr.approve(src, "Compliance")
+            s.check(ok and dr.get(src).approved, "an approval did not take")
+            s.check(dr.provenance_note([((1, src, 1, "t", "h"), 0.9)]) == "",
+                    "an approved document still warned the adviser")
+
+            dr.record_ingest(src, "sha-v4", 10)          # the file was swapped
+            s.check(not dr.get(src).approved,
+                    "the approval survived the document changing underneath it")
+            s.check(dr.get(src).lapsed, "a lapsed approval did not read as lapsed")
+            s.check("[UNAPPROVED]" in dr.provenance_note([((1, src, 1, "t", "h"), 0.9)]),
+                    "an answer cited a lapsed document without saying so")
+            s.check([e["event"] for e in dr.history(src)].count("approved") == 1,
+                    "the approval was erased instead of kept in the history")
+            s.check(dr.get(src).approved_by == "Compliance",
+                    "the register forgot who had approved it")
+
+            os.environ["FORTITUDO_INGEST_MODE"] = "controlled"
+            s.check(not dr.may_ingest(src, "sha-v4")[0],
+                    "controlled mode indexed a document with no current approval")
+            s.check(dr.may_ingest("client:x:fna.pdf", "sha")[0],
+                    "controlled mode blocked a client's own file")
+            os.environ["FORTITUDO_INGEST_MODE"] = "nonsense"
+            s.check(dr.mode() == "open", "a typo in the mode setting stopped the desk")
+            if verbose:
+                print(dr.render())
+        finally:
+            dr.REGISTER_DB = keep_db
+            os.environ.pop("FORTITUDO_INGEST_MODE", None)
+            if keep_mode is not None:
+                os.environ["FORTITUDO_INGEST_MODE"] = keep_mode
+    return s
+
+
 def score_backup(verbose=False) -> Score:
     """The properties that separate a backup from a hope."""
     import sqlite3, tempfile
@@ -379,6 +435,7 @@ def main() -> int:
         score_client_scope(args.verbose),
         score_backup(args.verbose),
         score_filing(args.verbose),
+        score_governance(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))

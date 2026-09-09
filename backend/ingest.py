@@ -25,6 +25,7 @@ try:
 except Exception:  # a broken install counts too; TXT and MD still ingest.
     pdfplumber = None
 
+import doc_register
 import store
 from llm import embed, health, has_model, OllamaError
 from config import DOCS_DIR, EMBED_MODEL, MIN_PAGE_CHARS
@@ -135,6 +136,14 @@ def ingest_file(
 ) -> int:
     source = source_name or path.name
 
+    # Checked before any extraction or embedding, so a controlled desk cannot be
+    # made to learn an unapproved document by anyone who can run this script.
+    sha = doc_register.fingerprint(path)
+    allowed, why = doc_register.may_ingest(source, sha)
+    if not allowed:
+        print(f"  REFUSE {source}  ({why})")
+        return 0
+
     if not needs_ingest(conn, path, source, rebuild):
         existing = conn.execute(
             "SELECT COUNT(*) FROM pages WHERE source = ?", (source,)
@@ -184,6 +193,9 @@ def ingest_file(
     store.set_source_meta(conn, source, mtime, size, len(pages))
     conn.commit()
     store.invalidate_cache()
+    # Recorded after the pages land, so the register describes what the index
+    # actually holds. A changed file drops any approval it was carrying.
+    doc_register.record_ingest(source, sha, len(pages))
     print()
     return len(pages)
 
@@ -284,7 +296,12 @@ def main():
     conn = store.connect()
     mode = "FULL REBUILD" if args.rebuild else "incremental (new/changed only)"
     print(f"\nIngesting into {store.DB_PATH}")
-    print(f"Mode: {mode}\n")
+    print(f"Mode: {mode}")
+    print(f"Governance: {doc_register.mode()}"
+          + ("  (unapproved product documents are refused)"
+             if doc_register.mode() == "controlled"
+             else "  (unapproved documents index, and answers citing them say so)")
+          + "\n")
 
     total = 0
     skipped_note = 0
@@ -315,6 +332,13 @@ def main():
     print("\nIndexed documents:")
     for name, count in store.sources(conn):
         print(f"  {count:>4} pages   {name}")
+    waiting = [d.source for d in doc_register.register(doc_register.PRODUCT)
+               if not d.approved]
+    if waiting:
+        print(f"\n{len(waiting)} product document(s) carry no current approval:")
+        for name in waiting[:12]:
+            print(f"  {name}")
+        print("  python doc_register.py approve \"<source>\" --by \"<name>\"")
     print("\nTip: day-to-day, just run  python ingest.py")
     print("     Use --rebuild only after changing the embedding model.\n")
 

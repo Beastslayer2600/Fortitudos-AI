@@ -65,6 +65,28 @@ def handle_get(handler, parts) -> bool:
         })
         return True
 
+    if parts == ["api", "documents"]:
+        import doc_register
+        docs = doc_register.register()
+        handler.send_json({
+            "mode": doc_register.mode(),
+            "verdicts_note": ("In controlled mode an unapproved product "
+                              "document is not indexed at all."),
+            "documents": [{
+                "source": d.source, "kind": d.kind, "pages": d.pages,
+                "sha256": d.sha256, "origin": d.origin, "status": d.status,
+                "approved": d.approved, "governed": d.governed,
+                "approved_by": d.approved_by, "approved_at": d.approved_at,
+                "note": d.note,
+                # True only when an approval existed and the file then changed.
+                # A document that was never approved is not the same problem.
+                "lapsed": d.lapsed,
+            } for d in docs],
+            "awaiting_approval": [d.source for d in docs
+                                  if d.governed and not d.approved],
+        })
+        return True
+
     if parts == ["api", "build"]:
         handler.send_json({"desk_build": DESK_BUILD, "public_base": public_base() or None})
         return True
@@ -140,6 +162,24 @@ def handle_post(handler, parts, body) -> bool:
             return True
         handler.send_json({"ok": ok} if ok else {"error": "No such answer."},
                           200 if ok else 404)
+        return True
+
+    if parts == ["api", "documents", "approve"]:
+        import doc_register
+        # The name is the approval. An approval with nobody's name on it is a
+        # checkbox, and a compliance officer will read it as one.
+        ok, msg = doc_register.approve(
+            str(body.get("source") or ""), str(body.get("by") or ""),
+            str(body.get("sha256") or ""), str(body.get("origin") or ""),
+            str(body.get("note") or ""))
+        handler.send_json({"ok": ok, "message": msg}, 200 if ok else 400)
+        return True
+    if parts == ["api", "documents", "withdraw"]:
+        import doc_register
+        ok, msg = doc_register.withdraw(
+            str(body.get("source") or ""), str(body.get("by") or ""),
+            str(body.get("reason") or ""))
+        handler.send_json({"ok": ok, "message": msg}, 200 if ok else 400)
         return True
 
     if parts == ["api", "learn", "teach"]:
