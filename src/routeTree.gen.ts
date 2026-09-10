@@ -14,6 +14,7 @@ import { Route as AskRouteImport } from './routes/ask'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as CraftRouteImport } from './routes/craft'
 import { Route as DropzoneRouteImport } from './routes/dropzone'
+import { Route as EvidenceRouteImport } from './routes/evidence'
 import { Route as LearnRouteImport } from './routes/learn'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as SocialRouteImport } from './routes/social'
@@ -45,6 +46,11 @@ const CraftRoute = CraftRouteImport.update({
 const DropzoneRoute = DropzoneRouteImport.update({
   id: '/dropzone',
   path: '/dropzone',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EvidenceRoute = EvidenceRouteImport.update({
+  id: '/evidence',
+  path: '/evidence',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LearnRoute = LearnRouteImport.update({
@@ -89,6 +95,7 @@ export interface FileRoutesByFullPath {
   '/chat': typeof ChatRoute
   '/craft': typeof CraftRoute
   '/dropzone': typeof DropzoneRoute
+  '/evidence': typeof EvidenceRoute
   '/learn': typeof LearnRoute
   '/library': typeof LibraryRoute
   '/social': typeof SocialRoute
@@ -103,6 +110,7 @@ export interface FileRoutesByTo {
   '/chat': typeof ChatRoute
   '/craft': typeof CraftRoute
   '/dropzone': typeof DropzoneRoute
+  '/evidence': typeof EvidenceRoute
   '/learn': typeof LearnRoute
   '/library': typeof LibraryRoute
   '/social': typeof SocialRoute
@@ -118,6 +126,7 @@ export interface FileRoutesById {
   '/chat': typeof ChatRoute
   '/craft': typeof CraftRoute
   '/dropzone': typeof DropzoneRoute
+  '/evidence': typeof EvidenceRoute
   '/learn': typeof LearnRoute
   '/library': typeof LibraryRoute
   '/social': typeof SocialRoute
@@ -134,6 +143,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/craft'
     | '/dropzone'
+    | '/evidence'
     | '/learn'
     | '/library'
     | '/social'
@@ -148,6 +158,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/craft'
     | '/dropzone'
+    | '/evidence'
     | '/learn'
     | '/library'
     | '/social'
@@ -162,6 +173,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/craft'
     | '/dropzone'
+    | '/evidence'
     | '/learn'
     | '/library'
     | '/social'
@@ -177,6 +189,7 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRoute
   CraftRoute: typeof CraftRoute
   DropzoneRoute: typeof DropzoneRoute
+  EvidenceRoute: typeof EvidenceRoute
   LearnRoute: typeof LearnRoute
   LibraryRoute: typeof LibraryRoute
   SocialRoute: typeof SocialRoute
@@ -221,6 +234,13 @@ declare module '@tanstack/react-router' {
       path: '/dropzone'
       fullPath: '/dropzone'
       preLoaderRoute: typeof DropzoneRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/evidence': {
+      id: '/evidence'
+      path: '/evidence'
+      fullPath: '/evidence'
+      preLoaderRoute: typeof EvidenceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/learn': {
@@ -281,6 +301,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRoute,
   CraftRoute: CraftRoute,
   DropzoneRoute: DropzoneRoute,
+  EvidenceRoute: EvidenceRoute,
   LearnRoute: LearnRoute,
   LibraryRoute: LibraryRoute,
   SocialRoute: SocialRoute,

@@ -13,6 +13,7 @@ import {
   Sparkles,
   Theater,
   Users,
+  ClipboardCheck,
 } from "lucide-react";
 import { Mark } from "@/components/mark";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ const NAV = [
   { to: "/clients", label: "Clients", icon: Users },
   { to: "/dropzone", label: "Drop", icon: Inbox },
   { to: "/learn", label: "Learn", icon: GraduationCap },
+  { to: "/evidence", label: "Evidence", icon: ClipboardCheck },
   { to: "/social", label: "Social", icon: Sparkles },
   { to: "/adjudication", label: "Studio", icon: Theater },
   { to: "/craft", label: "Craft", icon: Hammer },

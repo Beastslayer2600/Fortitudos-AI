@@ -3500,6 +3500,95 @@ class TheDeskCanSayWhereTheDataIs(unittest.TestCase):
         for store in rep.stray_stores:
             self.assertTrue(store.holds_personal_data)
 
+class TheEvidenceIsReachableFromTheDesk(unittest.TestCase):
+    """Six controls existed as endpoints with nothing to reach them.
+
+    The one that suffered most is the answer log. It exists to turn "how often
+    is this wrong" from an estimate into a number, and it could not, because
+    marking an answer required a command line. An evidence log the adviser
+    cannot add to in the twenty seconds between clients does not get added to.
+    """
+
+    def setUp(self):
+        import answer_log, tempfile
+        self.log = answer_log
+        self.tmp = tempfile.TemporaryDirectory()
+        self._db = answer_log.LOG_DB
+        answer_log.LOG_DB = Path(self.tmp.name) / "answers.db"
+
+    def tearDown(self):
+        self.log.LOG_DB = self._db
+        self.tmp.cleanup()
+
+    def test_the_list_carries_the_answer_not_only_the_question(self):
+        """Nobody can say whether an answer was wrong while looking only at
+        the question. The first version returned the question and the verdict,
+        which made the marking screen impossible to use honestly."""
+        self.log.record(question="q", answer="Six months from inception.",
+                        room="fa", results=[])
+        row = self.log.recent(5)[0]
+        self.assertIn("preview", row)
+        self.assertEqual(row["preview"], "Six months from inception.")
+
+    def test_a_long_answer_is_previewed_and_says_so(self):
+        self.log.record(question="q", answer="x" * 900, room="fa", results=[])
+        row = self.log.recent(5)[0]
+        self.assertEqual(len(row["preview"]), self.log.PREVIEW_CHARS)
+        self.assertTrue(row["truncated"])
+
+    def test_a_short_answer_is_not_marked_truncated(self):
+        self.log.record(question="q", answer="short", room="fa", results=[])
+        self.assertFalse(self.log.recent(5)[0]["truncated"])
+
+    def test_the_flags_the_desk_raised_come_through_as_one_list(self):
+        """So the interface can render them without knowing what each column
+        means."""
+        self.log.record(question="q", room="fa", results=[],
+                        answer="a [SPAN-CHECK] b [VERSIONS] c [UNAPPROVED] d")
+        self.assertEqual(sorted(self.log.recent(5)[0]["flags"]),
+                         ["span-check", "unapproved", "versions"])
+
+    def test_a_high_invention_risk_is_a_flag_too(self):
+        self.log.record(question="q", answer="a", room="fa", results=[],
+                        invent_risk="high")
+        self.assertIn("high risk", self.log.recent(5)[0]["flags"])
+        self.log.record(question="q", answer="a", room="fa", results=[],
+                        invent_risk="low")
+        self.assertNotIn("high risk", self.log.recent(5)[0]["flags"])
+
+    def test_the_preview_never_leaks_the_whole_answer_into_the_list(self):
+        """The full text is one request away, so a list of thirty answers does
+        not carry thirty client files."""
+        self.log.record(question="q", answer="secret " * 300, room="fa", results=[])
+        row = self.log.recent(5)[0]
+        self.assertNotIn("answer", row)
+        self.assertLessEqual(len(row["preview"]), self.log.PREVIEW_CHARS)
+
+    def test_unjudged_answers_can_be_listed_alone(self):
+        """The screen's main job is working through what has not been judged."""
+        first = self.log.record(question="a", answer="x", room="fa", results=[])
+        self.log.record(question="b", answer="y", room="fa", results=[])
+        self.log.mark(first, "good")
+        self.assertEqual([r["question"] for r in self.log.recent(5, only_unmarked=True)],
+                         ["b"])
+
+    def test_the_report_carries_what_the_screen_shows(self):
+        """Every figure on the page comes from one request, so the page cannot
+        show a set of numbers that never existed together."""
+        import desk_extra, inspect
+        src = inspect.getsource(desk_extra.handle_get)
+        block = src[src.index('["api", "answers"]'):]
+        block = block[:block.index("return True")]
+        for field in ("hours_saved", "wrong_rate", "minutes_by_hand",
+                      "verdict_options", "as_of_questions", "recent"):
+            self.assertIn(field, block, field)
+
+    def test_the_assumption_behind_the_hours_travels_with_the_number(self):
+        """Someone will ask where the hours came from, and the screen has to be
+        able to answer without the reader opening the source."""
+        import desk_extra, inspect
+        self.assertIn("minutes_by_hand", inspect.getsource(desk_extra.handle_get))
+
 
 if __name__ == "__main__":
     unittest.main()

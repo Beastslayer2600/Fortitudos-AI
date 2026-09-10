@@ -190,3 +190,157 @@ export function fileToBase64(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+
+/* ------------------------------------------------------------------ evidence
+ * The compliance surface: the answer log, the document register, retention and
+ * data residency. Six controls that until now existed only as endpoints — and
+ * an evidence log nobody can add to is not an evidence log, because the one
+ * thing it needs is the adviser saying "that answer was wrong".
+ */
+
+/** What the adviser can say about an answer afterwards. Mirrors answer_log.VERDICTS. */
+export type Verdict = "good" | "wrong" | "thin" | "stale";
+
+export type LoggedAnswer = {
+  id: number;
+  asked_at: string;
+  room: string;
+  question: string;
+  preview: string;
+  truncated: boolean;
+  verdict: Verdict | "";
+  verdict_note: string;
+  client_id: string;
+  as_of: string;
+  seconds: number;
+  invent_risk: string;
+  asked_by: string;
+  /** Flags the desk raised on itself: span-check, versions, unapproved, high risk. */
+  flags: string[];
+};
+
+export type AnswerReport = {
+  since: string;
+  total: number;
+  hours_saved: number;
+  by_room: Record<string, number>;
+  verdicts: Record<string, number>;
+  unmarked: number;
+  /** null — not 0 — when nothing has been judged. An unmeasured rate is not zero. */
+  wrong_rate: number | null;
+  as_of_questions: number;
+  client_questions: number;
+  span_flagged: number;
+  version_clash: number;
+  unapproved: number;
+  high_risk: number;
+  minutes_by_hand: number;
+  verdict_options: Record<Verdict, string>;
+  recent: LoggedAnswer[];
+};
+
+export function answerReport(): Promise<AnswerReport> {
+  return json<AnswerReport>("/api/answers");
+}
+
+export function fullAnswer(id: number): Promise<LoggedAnswer & { answer: string }> {
+  return json<LoggedAnswer & { answer: string }>(`/api/answers/${id}`);
+}
+
+export function markAnswer(id: number, verdict: Verdict, note = "") {
+  return json<{ ok: boolean }>("/api/answers/mark", {
+    method: "POST",
+    body: JSON.stringify({ id, verdict, note }),
+  });
+}
+
+export type RegisteredDoc = {
+  source: string;
+  kind: string;
+  pages: number;
+  sha256: string;
+  origin: string;
+  status: string;
+  approved: boolean;
+  governed: boolean;
+  approved_by: string;
+  approved_at: string;
+  note: string;
+  /** Was approved, then the file changed. Different from never approved. */
+  lapsed: boolean;
+};
+
+export type Register = {
+  mode: string;
+  documents: RegisteredDoc[];
+  awaiting_approval: string[];
+};
+
+export function documentRegister(): Promise<Register> {
+  return json<Register>("/api/register");
+}
+
+/** The approver's name comes from the credential, never from here. */
+export function approveDocument(source: string, origin = "", note = "") {
+  return json<{ ok: boolean; message: string }>("/api/register/approve", {
+    method: "POST",
+    body: JSON.stringify({ source, origin, note }),
+  });
+}
+
+export function withdrawDocument(source: string, reason = "") {
+  return json<{ ok: boolean; message: string }>("/api/register/withdraw", {
+    method: "POST",
+    body: JSON.stringify({ source, reason }),
+  });
+}
+
+export type RetentionDue = {
+  client_id: string;
+  status: string;
+  expires_on: string;
+  over_by_days: number;
+};
+
+export type Retention = {
+  basis: string;
+  years: number;
+  due: RetentionDue[];
+  nothing_is_automatic: boolean;
+};
+
+export function retention(): Promise<Retention> {
+  return json<Retention>("/api/retention");
+}
+
+export type Residency = {
+  data_root: string;
+  ok: boolean;
+  stores: {
+    name: string;
+    kind: string;
+    exists: boolean;
+    under_data_root: boolean;
+    personal_data: boolean;
+  }[];
+  compute: { job: string; local: boolean; carries_client_data: boolean }[];
+  outbound: { host: string; purpose: string; who_calls: string }[];
+  findings: string[];
+};
+
+export function residency(): Promise<Residency> {
+  return json<Residency>("/api/residency");
+}
+
+/**
+ * How the wrong-answer rate is shown.
+ *
+ * `null` means nothing has been judged, and it must not render as 0%. A tool
+ * that appears to have a zero error rate is one nobody has measured, and
+ * showing 0% would say the opposite of what an empty log means — to the
+ * adviser, and to whoever they eventually show it to.
+ */
+export function wrongRateLabel(rate: number | null): string {
+  if (rate === null) return "not measured";
+  return `${Math.round(rate * 100)}%`;
+}

@@ -360,16 +360,47 @@ def render(rep: Report) -> str:
     return "\n".join(lines)
 
 
+# How much of an answer the list carries. Enough to recognise it and to judge
+# an obvious miss; not so much that the list becomes the answer and nobody
+# opens the row. A wrong figure is usually visible in the first few lines.
+PREVIEW_CHARS = 400
+
+
 def recent(limit: int = 20, only_unmarked: bool = False) -> List[dict]:
+    """The most recent answers, with enough of each to judge it.
+
+    The first version returned the question and the verdict but not the answer,
+    which made the marking screen impossible to use honestly: nobody can say
+    whether an answer was wrong while looking only at the question.
+    """
     conn = connect()
     try:
-        sql = "SELECT id, asked_at, room, question, verdict FROM answers"
+        sql = ("SELECT id, asked_at, room, question, answer, verdict, "
+               "verdict_note, client_id, as_of, seconds, span_flagged, "
+               "version_clash, unapproved, invent_risk, asked_by FROM answers")
         if only_unmarked:
             sql += " WHERE verdict = ''"
         sql += " ORDER BY id DESC LIMIT ?"
-        return [dict(r) for r in conn.execute(sql, (max(int(limit), 1),)).fetchall()]
+        rows = conn.execute(sql, (max(int(limit), 1),)).fetchall()
     finally:
         conn.close()
+    out = []
+    for row in rows:
+        item = dict(row)
+        text = item.pop("answer") or ""
+        item["preview"] = text[:PREVIEW_CHARS]
+        item["truncated"] = len(text) > PREVIEW_CHARS
+        # The flags the desk raised on itself, as one list the UI can render
+        # without knowing what each column means.
+        item["flags"] = [name for name, on in (
+            ("span-check", item.pop("span_flagged")),
+            ("versions", item.pop("version_clash")),
+            ("unapproved", item.pop("unapproved")),
+        ) if on]
+        if (item.get("invent_risk") or "") == "high":
+            item["flags"].append("high risk")
+        out.append(item)
+    return out
 
 
 def main() -> int:

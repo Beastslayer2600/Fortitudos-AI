@@ -78,7 +78,14 @@ def handle_get(handler, parts) -> bool:
             # is not a perfect one.
             "wrong_rate": rep.wrong_rate,
             "as_of_questions": rep.as_of_questions,
-            "recent": answer_log.recent(20),
+            "client_questions": rep.client_questions,
+            "span_flagged": rep.span_flagged,
+            "version_clash": rep.version_clash,
+            "unapproved": rep.unapproved,
+            "high_risk": rep.high_risk,
+            "minutes_by_hand": answer_log.MINUTES_BY_HAND,
+            "verdict_options": answer_log.VERDICTS,
+            "recent": answer_log.recent(30),
         })
         return True
 
@@ -117,6 +124,15 @@ def handle_get(handler, parts) -> bool:
                       for u in desk_users.everyone()],
             "you": getattr(getattr(handler, "desk_user", None), "name", ""),
         })
+        return True
+
+    if len(parts) == 3 and parts[:2] == ["api", "answers"]:
+        import answer_log
+        try:
+            row = answer_log.get(int(parts[2]))
+        except ValueError:
+            row = None
+        handler.send_json(row or {"error": "No such answer."}, 200 if row else 404)
         return True
 
     if parts == ["api", "retention"]:
