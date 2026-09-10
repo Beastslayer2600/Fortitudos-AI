@@ -3214,12 +3214,16 @@ class TheModelDocumentDescribesTheRealDesk(unittest.TestCase):
             eval_desk.score_backup(), eval_desk.score_filing(),
             eval_desk.score_governance(), eval_desk.score_access(),
             eval_desk.score_retention(), eval_desk.score_fence(),
+            eval_desk.score_residency(),
         ])
-        # score_retrieval needs an index and is counted from the harness run,
-        # so the document's number must be at least what runs without one.
+        # score_retrieval needs a built index, so it is the only section not
+        # counted here. The document's number must be that many more — an
+        # inequality would let the figure drift upward unnoticed.
         stated = int(re.search(r"\*\*Measured\.\*\* (\d+) automated",
                                self.text).group(1))
-        self.assertGreaterEqual(stated, total)
+        self.assertEqual(stated - total, 8,
+                         f"MODEL.md says {stated}; the sections total {total} "
+                         "plus 8 retrieval cases")
 
     def test_it_states_that_retrieval_has_no_confidence_floor(self):
         """The most important disclosure in the document, and the one it would
@@ -3316,6 +3320,141 @@ class TheModelDocumentDescribesTheRealDesk(unittest.TestCase):
 def inspect_source(fn) -> str:
     import inspect
     return inspect.getsource(fn)
+
+class TheDeskCanSayWhereTheDataIs(unittest.TestCase):
+    """POPIA s72 governs sending personal information across the border.
+
+    Being fully local is meant to be the easy win, and an easy win asserted in
+    a document is worth very little — "we are fully local" is what every vendor
+    says. These check that the claim is computed from the running configuration
+    and that it fails when it stops being true.
+    """
+
+    def setUp(self):
+        import residency
+        self.res = residency
+
+    def test_it_reports_every_store_the_desk_writes_to(self):
+        found, _root = self.res.stores()
+        names = {s.name for s in found}
+        for expected in ("client vault", "client records", "answer log",
+                         "user directory", "product index", "drop zone"):
+            self.assertIn(expected, names, expected)
+
+    def test_it_knows_which_stores_hold_personal_information(self):
+        found, _root = self.res.stores()
+        by_name = {s.name: s for s in found}
+        self.assertTrue(by_name["client vault"].holds_personal_data)
+        self.assertTrue(by_name["answer log"].holds_personal_data)
+        self.assertFalse(by_name["product documents"].holds_personal_data)
+
+    def test_the_index_counts_as_personal_data(self):
+        """It holds client:<id>:<file> rows carrying the extracted text of
+        client documents. Treating it as "just the product index" is how it
+        came to sit in the repo in the first place."""
+        found, _root = self.res.stores()
+        index = next(s for s in found if s.name == "product index")
+        self.assertTrue(index.holds_personal_data)
+
+    def test_a_fresh_install_puts_the_index_with_the_vault(self):
+        import subprocess, sys, tempfile, textwrap
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "vault"
+            # A backend tree with no legacy index in it, so the fallback is
+            # what gets exercised rather than the compatibility branch.
+            fake = Path(tmp) / "backend"
+            fake.mkdir()
+            (fake / "config.py").write_text(
+                (Path(__file__).parent / "config.py").read_text(encoding="utf-8"),
+                encoding="utf-8")
+            out = subprocess.run(
+                [sys.executable, "-c",
+                 "import config; print(config.DB_PATH)"],
+                cwd=fake, env={**os.environ, "FORTITUDO_DATA_ROOT": str(root),
+                               "PYTHONPATH": str(fake)},
+                capture_output=True, text=True)
+            self.assertEqual(out.stdout.strip(), str(root / "index.db"),
+                             out.stderr[-400:])
+
+    def test_an_existing_index_is_not_moved_out_from_under_anyone(self):
+        """On upgrade that would look exactly like losing it."""
+        import config
+        legacy = config.DATA_DIR / "index.db"
+        if legacy.exists():
+            self.assertEqual(Path(config.DB_PATH), legacy)
+
+    def test_every_job_resolves_to_this_machine(self):
+        for hop in self.res.hops():
+            if hop.job == "craft":
+                continue          # the one job allowed out, by design
+            self.assertTrue(hop.local, f"{hop.job} runs on {hop.host}")
+
+    def test_a_job_sent_elsewhere_is_reported(self):
+        """The check must be able to fail, or it proves nothing."""
+        import compute
+        from llm import OLLAMA_HOST
+        real = compute.plans
+        compute.plans = lambda host: [
+            compute.resolve("craft", "http://gpu.example.net:11434")]
+        try:
+            hops = self.res.hops()
+        finally:
+            compute.plans = real
+        self.assertEqual([h.local for h in hops], [False])
+
+    # --- the outbound scan is the point --------------------------------------
+
+    def test_every_external_host_in_the_source_is_classified(self):
+        """An unclassified host is the finding, not an error. A residency claim
+        decays the week somebody adds a font."""
+        unknown = [e.host for e in self.res.external() if not e.classified]
+        self.assertEqual(unknown, [])
+
+    def test_a_new_external_host_is_caught(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "beacon.py"
+            f.write_text('URL = "https://analytics.somebody.net/collect"\n',
+                         encoding="utf-8")
+            found = self.res.external([f])
+        self.assertEqual([e.host for e in found], ["analytics.somebody.net"])
+        self.assertFalse(found[0].classified)
+
+    def test_it_distinguishes_what_the_desk_fetches_from_what_a_visitor_does(self):
+        """Different disclosures. The desk calling a QR service is egress; a
+        WhatsApp link on a shop page is not."""
+        by_host = {e.host: e for e in self.res.external()}
+        self.assertEqual(by_host["api.qrserver.com"].who_calls,
+                         self.res.FETCHED_BY_THE_DESK)
+        self.assertEqual(by_host["wa.me"].who_calls, self.res.LINKED_FOR_A_HUMAN)
+        self.assertEqual(by_host["schema.org"].who_calls, self.res.NEVER_RESOLVED)
+
+    def test_a_local_host_is_not_reported_as_egress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "local.py"
+            f.write_text('H = "http://127.0.0.1:11434"\nL = "http://localhost:8000"\n',
+                         encoding="utf-8")
+            self.assertEqual(self.res.external([f]), [])
+
+    def test_an_example_host_in_a_docstring_is_not_reported_as_egress(self):
+        """Otherwise every error message that shows a URL becomes a finding,
+        and the report becomes noise nobody reads."""
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "doc.py"
+            f.write_text('"""Set FORTITUDO_CRAFT_HOST=http://192.168.1.50:11434\n'
+                         'or https://gpu.example.net for a remote box."""\n',
+                         encoding="utf-8")
+            self.assertEqual(self.res.external([f]), [])
+
+    def test_the_report_admits_what_it_cannot_check(self):
+        self.assertIn("does not check that the disk is encrypted",
+                      self.res.render())
+
+    def test_only_personal_data_outside_the_root_is_flagged(self):
+        """Marking a directory of product PDFs would teach the reader to
+        ignore the marks."""
+        rep = self.res.check()
+        for store in rep.stray_stores:
+            self.assertTrue(store.holds_personal_data)
 
 
 if __name__ == "__main__":

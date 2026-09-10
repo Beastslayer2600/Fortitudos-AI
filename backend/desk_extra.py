@@ -159,6 +159,32 @@ def handle_get(handler, parts) -> bool:
         })
         return True
 
+    if parts == ["api", "residency"]:
+        import residency
+        rep = residency.check()
+        handler.send_json({
+            "data_root": rep.data_root,
+            "ok": rep.ok,
+            "stores": [{"name": st.name, "kind": st.kind, "exists": st.exists,
+                        "under_data_root": st.under_data_root,
+                        "personal_data": st.holds_personal_data}
+                       for st in rep.stores],
+            # Paths are omitted deliberately: a directory listing of where the
+            # client vault lives is not something to hand out over HTTP.
+            "compute": [{"job": h.job, "local": h.local,
+                         "carries_client_data": h.carries_client_data}
+                        for h in rep.hops],
+            "outbound": [{"host": e.host, "purpose": e.purpose,
+                          "who_calls": e.who_calls} for e in rep.external],
+            "findings": ([f"personal data outside the data root: {st.name}"
+                          for st in rep.stray_stores]
+                         + [f"work leaves this machine: {h.job}"
+                            for h in rep.remote_hops]
+                         + [f"unclassified external host: {e.host}"
+                            for e in rep.unclassified]),
+        })
+        return True
+
     if parts == ["api", "build"]:
         handler.send_json({"desk_build": DESK_BUILD, "public_base": public_base() or None})
         return True

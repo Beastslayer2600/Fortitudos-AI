@@ -1,6 +1,7 @@
 """sqlite page index. As-of columns migrate in place."""
 import os
 import sqlite3
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -57,7 +58,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def connect() -> sqlite3.Connection:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # The index's own directory, not DATA_DIR: the two are the same only while
+    # the index still sits at the legacy in-repo path.
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
     _migrate(conn)

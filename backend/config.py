@@ -14,8 +14,7 @@ from pathlib import Path
 # ---------------------------------------------------------------- paths
 ROOT = Path(__file__).parent
 DOCS_DIR = ROOT / "docs"          # drop your PDFs here
-DATA_DIR = ROOT / "data"          # sqlite index lives here
-DB_PATH = DATA_DIR / "index.db"
+DATA_DIR = ROOT / "data"          # public mockups and other non-client output
 WEB_DIR = ROOT / "web"
 
 # Client vault, drop zone and drama records live outside the repo. The desk is
@@ -25,6 +24,19 @@ WEB_DIR = ROOT / "web"
 DATA_ROOT = Path(
     os.environ.get("FORTITUDO_DATA_ROOT")
     or (r"C:\FortitudoData" if os.name == "nt" else Path.home() / "FortitudoData")
+)
+
+# The page index used to live in the repo, because when it was written it held
+# nothing but product guides. It now also holds `client:<id>:<file>` rows
+# carrying the extracted text of client documents — which makes it client data,
+# and client data belongs where the vault is. residency.py found this.
+#
+# An index already sitting at the old path keeps being used. Moving somebody's
+# index out from under them on upgrade would look exactly like losing it.
+_LEGACY_DB = DATA_DIR / "index.db"
+DB_PATH = Path(
+    os.environ.get("FORTITUDO_INDEX_DB")
+    or (_LEGACY_DB if _LEGACY_DB.exists() else DATA_ROOT / "index.db")
 )
 
 # Published Craft mockups. These are the only files this server hands to an

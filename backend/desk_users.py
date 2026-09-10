@@ -268,6 +268,9 @@ def capability_for(parts: Sequence[str]) -> str:
         return "approve_documents" if len(p) > 2 else "documents"
     if p[:2] == ["api", "users"]:
         return "manage_users"
+    # Where the client data lives is an answer about the vault.
+    if p[:2] == ["api", "residency"]:
+        return "clients"
     # Reading what is past its retention date is not the same as destroying it.
     if p[:2] == ["api", "retention"]:
         return "approve_documents" if p[2:3] == ["erase"] else "clients"

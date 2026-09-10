@@ -478,6 +478,67 @@ def score_fence(verbose=False) -> Score:
     return s
 
 
+def score_residency(verbose=False) -> Score:
+    """Can the desk still say, truthfully, that the data is on this machine?
+
+    A residency claim decays: someone adds a font, a map tile, an analytics
+    beacon, and the claim quietly stops being true while the document still
+    says it is. This reads the configuration and the source rather than a list
+    somebody maintains, so it is current or it fails.
+    """
+    import tempfile
+    from pathlib import Path as P
+    import residency as res
+
+    s = Score("data residency")
+    found, root = res.stores()
+    by_name = {st.name: st for st in found}
+
+    for name in ("client vault", "client records", "answer log",
+                 "user directory", "product index", "drop zone"):
+        s.check(name in by_name, f"the residency report does not know about {name}")
+
+    s.check(by_name["product index"].holds_personal_data,
+            "the index is not treated as personal data — it holds the extracted "
+            "text of client documents")
+    s.check(not by_name["product documents"].holds_personal_data,
+            "product guides are being counted as personal data")
+
+    for hop in res.hops():
+        if hop.job == "craft":
+            continue                       # the one job allowed out, by design
+        s.check(hop.local, f"{hop.job} resolves to {hop.host}, not this machine")
+
+    unknown = [e.host for e in res.external() if not e.classified]
+    s.check(not unknown, "unclassified external host(s): " + ", ".join(unknown[:4]))
+
+    by_host = {e.host: e for e in res.external()}
+    s.check(by_host.get("api.qrserver.com") is not None
+            and by_host["api.qrserver.com"].who_calls == res.FETCHED_BY_THE_DESK,
+            "the QR service is no longer reported as something the desk calls")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Assembled at runtime. A literal external URL written here would be
+        # found by the very scan this is testing — eval_desk.py is source the
+        # scanner reads — and the fixture would report itself as a finding.
+        host = "analytics." + "somebody" + ".net"
+        beacon = P(tmp) / "beacon.py"
+        beacon.write_text(f'U = "https://{host}/x"\n', encoding="utf-8")
+        caught = res.external([beacon])
+        s.check([e.host for e in caught] == [host] and not caught[0].classified,
+                "a new external host was not caught")
+        quiet = P(tmp) / "local.py"
+        quiet.write_text('H = "http://127.0.0.1:11434"\n', encoding="utf-8")
+        s.check(res.external([quiet]) == [],
+                "a local host was reported as egress")
+
+    s.check("does not check that the disk is encrypted" in res.render(),
+            "the report no longer admits what it cannot check")
+    if verbose:
+        print(res.render())
+    return s
+
+
 def score_backup(verbose=False) -> Score:
     """The properties that separate a backup from a hope."""
     import sqlite3, tempfile
@@ -690,6 +751,7 @@ def main() -> int:
         score_access(args.verbose),
         score_retention(args.verbose),
         score_fence(args.verbose),
+        score_residency(args.verbose),
     ]
     if args.live:
         scores.append(score_live(conn, args.verbose))
