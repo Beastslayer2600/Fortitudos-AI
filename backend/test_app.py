@@ -1155,14 +1155,14 @@ class TheDeskSaysWhenItHoldsTwoVersions(unittest.TestCase):
 
     def test_two_versions_of_one_guide_are_flagged(self):
         from versioning import version_conflict
-        got = version_conflict(self.rows("guide:lifestyle_protector",
-                                         "guide:lifestyle_protector_v2"))
+        got = version_conflict(self.rows("guide:living_benefits",
+                                         "guide:living_benefits_v2"))
         self.assertEqual(len(got), 2)
 
     def test_two_different_products_are_not_flagged(self):
         from versioning import version_conflict
         self.assertEqual(
-            version_conflict(self.rows("guide:lifestyle_protector", "guide:income_protector")),
+            version_conflict(self.rows("guide:living_benefits", "guide:income_protector")),
             [])
 
     def test_dated_editions_of_one_guide_are_flagged(self):
@@ -1227,8 +1227,8 @@ class TheEvalHarnessIsRealAndRuns(unittest.TestCase):
         """Without rival versions the retrieval score cannot discriminate."""
         from eval.harness import CORPUS
         names = {p.stem for p in CORPUS.glob("*.txt")}
-        self.assertIn("lifestyle_protector", names)
-        self.assertIn("lifestyle_protector_v2", names)
+        self.assertIn("living_benefits", names)
+        self.assertIn("living_benefits_v2", names)
 
     def test_the_fixture_embedding_is_deterministic(self):
         from eval.harness import fake_embed
@@ -1607,7 +1607,7 @@ class OneClientsFileNeverReachesAnothersAnswer(unittest.TestCase):
 
     def rows(self):
         return [
-            (1, "guide:lifestyle_protector", 12, "Level A pays 100%.", 0),
+            (1, "guide:living_benefits", 12, "Level A pays 100%.", 0),
             (2, "client:botha:fna.pdf", 1, "Botha net salary R55 000.", 0),
             (3, "client:naidoo:fna.pdf", 1, "Naidoo net salary R92 000.", 0),
         ]
@@ -1620,11 +1620,11 @@ class OneClientsFileNeverReachesAnothersAnswer(unittest.TestCase):
         return [r[1] for r in kept]
 
     def test_no_client_attached_means_no_client_pages(self):
-        self.assertEqual(self.scope(None), ["guide:lifestyle_protector"])
+        self.assertEqual(self.scope(None), ["guide:living_benefits"])
 
     def test_a_client_sees_only_their_own_pages(self):
         self.assertEqual(
-            self.scope("botha"), ["guide:lifestyle_protector", "client:botha:fna.pdf"])
+            self.scope("botha"), ["guide:living_benefits", "client:botha:fna.pdf"])
 
     def test_the_other_client_is_not_reachable(self):
         self.assertNotIn("client:naidoo:fna.pdf", self.scope("botha"))
@@ -3147,6 +3147,48 @@ class TheSharedCodeStatesNobodysIdentity(unittest.TestCase):
         self._write(fsp_number="42")
         self.assertNotIn("42", self.fence.check().fenced_values)
 
+    def test_a_name_in_a_filename_is_caught(self):
+        """Two eval fixtures carried a product name in their own filenames and
+        the fence never saw them: it read file contents and never file paths."""
+        root = self._synthetic_tree("X = 1\n")
+        (root / "backend" / "nomsa_dlamini_notes.py").write_text(
+            "Y = 2\n", encoding="utf-8")
+        self._write(adviser_name="Nomsa Dlamini")
+        with self._rooted(root):
+            rep = self.fence.check()
+        by_path = [b for b in rep.breaches if b.line == 0]
+        self.assertTrue(by_path, "a name in a filename was not caught")
+        self.assertIn("filename", by_path[0].why)
+
+    def test_separators_do_not_hide_a_name_in_a_path(self):
+        """A two-word product name, the same name with an underscore, and the
+        same name with a hyphen are one fact written three ways — and only one
+        of them is what a filename looks like.
+
+        Written with an invented name: spelling a forbidden one here would put
+        it in shared source, which is what the fence is for.
+        """
+        flat = self.fence._flatten
+        self.assertEqual(flat("Kestrel Cover"), flat("kestrel_cover"))
+        self.assertEqual(flat("Kestrel Cover"), flat("kestrel-cover"))
+        self.assertNotEqual(flat("Kestrel Cover"), flat("kestrelcoverplus"))
+
+    def test_text_fixtures_are_inside_the_fence(self):
+        """eval/corpus is shared test data. Leaving .txt out of the scanned
+        suffixes made two fixtures named after an employer product invisible
+        to the check that exists to find exactly that."""
+        self.assertIn(".txt", self.fence.SHARED_SUFFIXES)
+        scanned = {p.name for p in self.fence.shared_files()}
+        self.assertTrue(any(n.endswith(".txt") for n in scanned))
+
+    def test_the_advisers_own_docs_folder_is_content_not_code(self):
+        """backend/docs is the drop folder — their own guides and study notes.
+        Reported, like the vault, rather than fenced."""
+        rep = self.fence.check()
+        self.assertTrue(any(f.startswith("backend/docs/") for f in rep.local_files))
+        scanned = {p.as_posix() for p in self.fence.shared_files()}
+        self.assertFalse(any("/backend/docs/" in p for p in scanned))
+
     def test_the_fence_checks_the_trees_it_claims_to(self):
         checked = {p.relative_to(self.fence.ROOT).as_posix()
                    for p in self.fence.shared_files()}
@@ -3163,11 +3205,33 @@ class TheSharedCodeStatesNobodysIdentity(unittest.TestCase):
         for path in rep.local_files:
             self.assertFalse(any(b.path == path for b in rep.breaches))
 
-    def test_an_unconfigured_desk_is_not_reported_as_a_pass(self):
-        """Nothing to look for is not the same as nothing to find."""
-        rep = self.fence.check()
-        self.assertIn("not a pass", self.fence.render(
-            self.fence.Report(checked=rep.checked)))
+    def test_an_unconfigured_desk_is_not_reported_as_clean(self):
+        """Nothing to look for is not the same as nothing to find.
+
+        This test used to build an empty Report() by hand and assert on the
+        text it produced. That state is unreachable in real use — the employer
+        list always contributes values — so the test passed while the actual
+        run of an unconfigured desk printed "CLEAN". It now goes through
+        check() like everything else.
+        """
+        rep = self.fence.check()          # nothing configured, per setUp
+        self.assertFalse(rep.identity_checked)
+        rendered = self.fence.render(rep)
+        self.assertIn("PARTLY CHECKED", rendered)
+        self.assertIn("not the same as clean", rendered)
+        self.assertNotIn("CLEAN — no configured identity", rendered)
+
+    def test_a_configured_desk_that_is_clean_says_so_plainly(self):
+        # Over a synthetic tree: a fixture name written into this file is in
+        # the real tree, and the fence would rightly find it.
+        root = self._synthetic_tree("VERSION = '1.0'\n")
+        self._write(adviser_name="Nomsa Dlamini", fsp_number="778812")
+        with self._rooted(root):
+            rep = self.fence.check()
+        self.assertTrue(rep.identity_checked)
+        rendered = self.fence.render(rep)
+        self.assertIn("CLEAN", rendered)
+        self.assertNotIn("PARTLY CHECKED", rendered)
 
     # --- the places identity used to be hardcoded ---------------------------
 
@@ -3228,6 +3292,7 @@ class TheModelDocumentDescribesTheRealDesk(unittest.TestCase):
             eval_desk.score_retention(), eval_desk.score_fence(),
             eval_desk.score_residency(), eval_desk.score_document_writes(),
         ])
+        # score_fence is counted above; its three new cases moved the total.
         # score_retrieval needs a built index, so it is the only section not
         # counted here. The document's number must be that many more — an
         # inequality would let the figure drift upward unnoticed.

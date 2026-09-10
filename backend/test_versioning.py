@@ -57,7 +57,7 @@ class Intent(unittest.TestCase):
 
 class FilenameMeta(unittest.TestCase):
     def test_date_in_name(self):
-        meta = v.guess_meta_from_name("lifestyle-protector-2024-07.pdf")
+        meta = v.guess_meta_from_name("living-benefits-2024-07.pdf")
         self.assertEqual(meta["effective_from"], "2024-07-01")
 
 

@@ -166,7 +166,7 @@ def span_check(answer: str, context: str) -> Tuple[str, List[str]]:
 def product_of(source: str) -> str:
     """The product a source belongs to, with version and date markers stripped.
 
-    `lifestyle_protector_v2` and `lifestyle_protector` are the same product.
+    `living_benefits_v2` and `living_benefits` are the same product.
     Grouping by this is what lets the desk notice it is holding two versions.
     """
     stem = Path(source or "").stem

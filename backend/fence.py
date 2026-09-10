@@ -42,14 +42,20 @@ ROOT = Path(__file__).resolve().parent.parent
 # checked, so the list is the claim: these are the trees that must be clean.
 SHARED_TREES = ("backend", "src", "scripts")
 
-SHARED_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".html", ".css"}
+# Text fixtures count. eval/corpus/*.txt is shared test data, and two of its
+# files were named after an employer's product — invisible to the fence purely
+# because .txt was not in this set.
+SHARED_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".html", ".css",
+                   ".txt", ".md", ".json"}
 
 # Content that belongs to the adviser, not to the codebase. Excluded from the
 # fence because it is not shared — and reported separately, because "this is
 # what would have to come out" is the question the fence is really answering.
 LOCAL_TREES = (
-    "backend/docs/learn",
-    "backend/docs/clients",
+    # backend/docs is the drop folder: the adviser's own guides, doctrine and
+    # study notes. It is content they own, not code anyone would be handed, so
+    # it is reported rather than fenced — the same treatment as the vault.
+    "backend/docs",
     "backend/data",
 )
 
@@ -91,6 +97,16 @@ def _digits(text: str) -> str:
     return re.sub(r"\D", "", text or "")
 
 
+def _flatten(text: str) -> str:
+    """Lowercase, with separators removed, for comparing names to paths.
+
+    "Lifestyle Protector", "lifestyle_protector" and "lifestyle-protector" are
+    the same fact written three ways, and only one of them is what a filename
+    looks like.
+    """
+    return re.sub(r"[\s_\-.]+", "", (text or "").lower())
+
+
 @dataclass
 class Breach:
     path: str
@@ -106,10 +122,19 @@ class Report:
     checked: int = 0
     local_files: List[str] = field(default_factory=list)
     fenced_values: List[str] = field(default_factory=list)
+    # Whether this desk has an identity to look for at all. Tracked separately
+    # from `fenced_values`, which is never empty because the employer list
+    # always contributes — so "we found nothing" on an unconfigured desk used
+    # to read as CLEAN when the identity half had simply not been checked.
+    identity_configured: bool = False
 
     @property
     def ok(self) -> bool:
         return not self.breaches
+
+    @property
+    def identity_checked(self) -> bool:
+        return self.identity_configured
 
 
 def _is_local(rel: str) -> bool:
@@ -176,7 +201,9 @@ def fenced_values() -> List[Tuple[str, str]]:
 
 def check(extra: Sequence[str] = ()) -> Report:
     """Look for the configured identity in code that is meant to be shared."""
-    rep = Report()
+    import identity
+
+    rep = Report(identity_configured=identity.load(refresh=True).configured)
     values = fenced_values() + [(v, "named on the command line") for v in extra
                                 if len(v) >= MIN_VALUE_LENGTH]
     rep.fenced_values = [v for v, _ in values]
@@ -192,7 +219,17 @@ def check(extra: Sequence[str] = ()) -> Report:
         except OSError:
             continue
         lowered = text.lower()
+        # The path counts too. A file named lifestyle_protector.txt states the
+        # product in its own name, and reading only file contents never sees
+        # it. Separators are flattened so lifestyle_protector matches
+        # "Lifestyle Protector".
+        flat_path = _flatten(rel)
         for value, why in values:
+            flat_value = _flatten(value)
+            if len(flat_value) >= MIN_VALUE_LENGTH and flat_value in flat_path:
+                rep.breaches.append(Breach(path=rel, line=0, value=value,
+                                           why=f"{why} — in the filename",
+                                           text=rel))
             # A phone number is the same fact written several ways. The first
             # version of this compared literal text only, and missed a
             # hardcoded wa.me link because the configured number carries
@@ -217,13 +254,21 @@ def render(rep: Report) -> str:
              f"  {rep.checked} shared source files checked"]
     if not rep.fenced_values:
         lines.append("")
-        lines.append("  Nothing to check for: no identity is configured, and")
-        lines.append("  the fence has nothing to look for. This is not a pass —")
-        lines.append("  configure identity.json, then run it again.")
+        lines.append("  Nothing to check for at all. This is not a pass.")
         return "\n".join(lines) + "\n"
 
     lines.append(f"  looking for {len(rep.fenced_values)} value(s)")
-    if rep.ok:
+    if rep.ok and not rep.identity_checked:
+        # True but not a clean bill of health, and the difference matters. The
+        # employer list was checked; this desk's own identity was not, because
+        # it has not been told what its identity is.
+        lines.append("")
+        lines.append("  PARTLY CHECKED — no employer or product material found,")
+        lines.append("  but this desk has no identity configured, so the fence")
+        lines.append("  had no name, FSP or product of its own to look for.")
+        lines.append("  This is not the same as clean. Configure identity.json")
+        lines.append("  (see IDENTITY.md) and run it again.")
+    elif rep.ok:
         lines.append("")
         lines.append("  CLEAN — no configured identity found in shared code.")
     else:

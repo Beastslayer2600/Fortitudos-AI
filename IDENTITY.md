@@ -72,13 +72,22 @@ person's details — a blocklist protects whoever wrote it and nobody else, and
 the next adviser's name would sail straight through. What is forbidden is *the
 configured identity appearing in shared code*, whoever's it is.
 
-Two things it does differently from the obvious version:
+Four things it does differently from the obvious version, three of which were
+added only after a later pass found it missing them:
 
 - **Shipped defaults are skipped.** Fencing `"the studio"` matches ordinary
   prose and reports the absence of identity as a breach — the one result that
   would make people stop running it.
-- **An unconfigured desk is not reported as a pass.** Nothing to look for is
-  not the same as nothing to find, and it says so.
+- **An unconfigured desk reports `PARTLY CHECKED`, not `CLEAN`.** The employer
+  list is always checked; the desk's own identity cannot be, because it has
+  none configured. Reporting that as clean is a true sentence that reads as a
+  clean bill of health.
+- **Filenames are checked, not just file contents.** Two evaluation fixtures
+  were named after an employer's product, and the fence read straight past
+  them. Separators are flattened, so `a_product_name` matches `A Product Name`.
+- **Text and data fixtures are inside the fence.** `eval/corpus/*.txt` is
+  shared test data and was invisible purely because `.txt` was not in the list
+  of scanned suffixes. One of those fixtures carried a real FSP number.
 
 Employer and product names (`Liberty Group`, `Lifestyle Protector`) are
 forbidden outright, because an employer's name is not one of the desk's own
@@ -92,7 +101,7 @@ evaluation rather than when somebody remembers.
 | Kind | Rule |
 |---|---|
 | **shared** — `backend/`, `src/`, `scripts/` | No configured identity, no employer or product material |
-| **local** — `backend/docs/learn/`, `backend/docs/clients/`, `backend/data/` | The adviser's own content. Not fenced, and not shareable either |
+| **local** — `backend/docs/`, `backend/data/` | The adviser's own content — the drop folder, their guides, doctrine and study notes. Not fenced, and not shareable either |
 | **identity** — `identity.py`, `fence.py`, `model/Modelfile` | Identity is expected here |
 
 The fence lists the local files every time it runs. That list is the answer to

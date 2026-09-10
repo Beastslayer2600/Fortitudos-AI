@@ -473,8 +473,15 @@ def score_fence(verbose=False) -> Score:
                     "an unconfigured desk claims a licence")
             s.check("FSP" not in identity.evidence_engine_line(),
                     "an unconfigured desk states an FSP in the advice prompt")
-            s.check("not a pass" in fence.render(fence.Report()),
-                    "a desk with nothing to look for was reported as clean")
+            s.check(not rep.identity_checked,
+                    "an unconfigured desk reported that it checked its identity")
+            s.check("PARTLY CHECKED" in fence.render(rep)
+                    and "not the same as clean" in fence.render(rep),
+                    "an unconfigured desk was reported as CLEAN — the employer "
+                    "list was checked, its own identity was not")
+            s.check(".txt" in fence.SHARED_SUFFIXES,
+                    "text fixtures are outside the fence — eval/corpus is "
+                    "shared test data")
             s.check("the practice" not in rep.fenced_values
                     and "the studio" not in rep.fenced_values,
                     "the fence is looking for its own generic defaults")
@@ -493,6 +500,15 @@ def score_fence(verbose=False) -> Score:
                     "the fence did not catch a configured name in shared code")
             s.check(caught.breaches[0].line == 1,
                     "the fence did not report the line to look at")
+
+            # The filename counts too. Two eval fixtures were named after an
+            # employer product and the fence never saw them, because it read
+            # file contents and never file paths.
+            named = P(tmp) / "repo" / "backend" / "nomsa_dlamini_notes.py"
+            named.write_text("X = 1\n", encoding="utf-8")
+            by_path = [b for b in fence.check().breaches if b.line == 0]
+            s.check(by_path and "filename" in by_path[0].why,
+                    "a name in a filename is invisible to the fence")
             if verbose:
                 print(fence.render(rep))
         finally:

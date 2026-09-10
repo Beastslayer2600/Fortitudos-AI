@@ -24,14 +24,14 @@ ROUTING = [
 
 # question -> a source that must appear in the top-k pages.
 RETRIEVAL = [
-    ("hearing loss both ears 90 decibels", "guide:lifestyle_protector", 27),
-    ("survival period cancer diagnosis", "guide:lifestyle_protector", 12),
-    ("waiting period severe illness commencement", "guide:lifestyle_protector", 13),
-    ("self-inflicted injury exclusion", "guide:lifestyle_protector", 41),
+    ("hearing loss both ears 90 decibels", "guide:living_benefits", 27),
+    ("survival period cancer diagnosis", "guide:living_benefits", 12),
+    ("waiting period severe illness commencement", "guide:living_benefits", 13),
+    ("self-inflicted injury exclusion", "guide:living_benefits", 41),
     ("occupational disability waiting period options", "guide:income_protector", 4),
     ("temporary disability material duties own occupation", "guide:income_protector", 9),
     ("maximum benefit percentage of pre-disability income", "guide:income_protector", 9),
-    ("carcinoma in situ breast severity level", "guide:lifestyle_protector", 12),
+    ("carcinoma in situ breast severity level", "guide:living_benefits", 12),
 ]
 
 # (answer, context) -> figures that must NOT survive span_check because the
@@ -81,12 +81,12 @@ GATE_REJECTS = [
 # Result sets that must raise a version warning, and ones that must not. A
 # warning on every answer is noise; a missing one is a wrong figure.
 VERSION_CONFLICT = [
-    (["guide:lifestyle_protector", "guide:lifestyle_protector_v2"], True),
-    (["guide:lifestyle_protector_v2", "guide:lifestyle_protector"], True),
-    (["guide:lifestyle_protector", "guide:income_protector"], False),
+    (["guide:living_benefits", "guide:living_benefits_v2"], True),
+    (["guide:living_benefits_v2", "guide:living_benefits"], True),
+    (["guide:living_benefits", "guide:income_protector"], False),
     (["guide:income_protector"], False),
-    (["guide:lifestyle_protector_2024", "guide:lifestyle_protector_2025"], True),
-    (["guide:group_risk", "guide:lifestyle_protector"], False),
+    (["guide:living_benefits_2024", "guide:living_benefits_2025"], True),
+    (["guide:group_risk", "guide:living_benefits"], False),
 ]
 
 # Which rooms take the slower reasoning path. Advisor and RoA earn it.
@@ -111,9 +111,9 @@ PAGE_SPECS = [("1", 1), ("1,3", 2), ("2-4", 3), ("1,1,1", 1), ("2,99", 1), ("3-1
 # case is not an irrelevant page — it is another client's page, cited correctly.
 CLIENT_SCOPE = [
     # (scope, source, may it be retrieved)
-    (None, "guide:lifestyle_protector", True),
+    (None, "guide:living_benefits", True),
     (None, "client:botha:fna.pdf", False),
-    ("botha", "guide:lifestyle_protector", True),
+    ("botha", "guide:living_benefits", True),
     ("botha", "client:botha:fna.pdf", True),
     ("botha", "client:naidoo:fna.pdf", False),
     ("botha", "client:botha_estate:will.pdf", False),
