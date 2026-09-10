@@ -148,10 +148,12 @@ export const deskApi = {
       documents: { id: number; filename: string; doc_type: string; content_type?: string;
                    size?: number; created_at?: string }[] }>(`/api/clients/${encodeURIComponent(clientId)}`),
   /** What a filed PDF is: pages, text, form fields, and what can be done to it. */
-  pdf: (docId: string | number, clientId?: string) =>
+  // The client is required. A document id names a file; it does not say whose
+  // it is, and the backend refuses a read that will not say.
+  pdf: (docId: string | number, clientId: string) =>
     json<PdfDescription>(
       `/api/pdf/${encodeURIComponent(String(docId))}` +
-        (clientId ? `?client_id=${encodeURIComponent(clientId)}` : ""),
+        `?client_id=${encodeURIComponent(clientId)}`,
     ),
   /**
    * Run an operation on a filed PDF. Every one of these writes a NEW file into
@@ -166,11 +168,11 @@ export const deskApi = {
      * mismatch. Always pass it from the chat agent, where the id comes out of
      * a sentence and could be wrong or invented.
      */
-    clientId?: string,
+    clientId: string,
   ) =>
     json<PdfResult>(`/api/pdf/${encodeURIComponent(String(docId))}/${action}`, {
       method: "POST",
-      body: JSON.stringify(clientId ? { ...body, client_id: clientId } : body),
+      body: JSON.stringify({ ...body, client_id: clientId }),
     }),
   consent: (identifier: string, action = "check") =>
     json<{ allowed: boolean; kind: string; reason: string; state: string }>("/api/consent", { method: "POST", body: JSON.stringify({ identifier, action }) }),

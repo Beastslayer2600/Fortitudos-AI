@@ -144,10 +144,11 @@ CPU. `FORTITUDO_THINK=1` forces the reasoning pass on everywhere.
 
 Honest, because this is the part a compliance reviewer will press on.
 
-**Measured.** 205 automated evaluation cases across routing, retrieval,
+**Measured.** 216 automated evaluation cases across routing, retrieval,
 grounding, room separation, the HTML gate, version conflict, reasoning depth,
 PDF handling, client scoping, backup, filing rails, ingestion governance,
-access control, retention, the ring-fence, and data residency. These run
+access control, retention, document writes, the ring-fence, and data
+residency. These run
 without a model and check the rails: what the code does with a given answer,
 not whether the answer is good.
 

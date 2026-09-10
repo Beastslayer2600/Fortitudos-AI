@@ -1419,13 +1419,16 @@ class ThePdfApiWritesOnlyToTheDraftFolder(unittest.TestCase):
             def send_json(self, payload, status=200):
                 captured.update(payload=payload, status=status)
 
-        handled = pdf_api.handle_post(Fake(), ["api", "pdf", self.doc_id, action], body)
+        # Every real caller sends the client; the backend refuses a request
+        # that will not say whose document it is.
+        handled = pdf_api.handle_post(
+            Fake(), ["api", "pdf", self.doc_id, action], {**body, "client_id": self.cid})
         self.assertTrue(handled, action)
         return captured
 
     def test_describe_reports_what_this_document_supports(self):
         import pdf_api
-        info = pdf_api.describe(self.doc_id)
+        info = pdf_api.describe(self.doc_id, self.cid)
         self.assertEqual(info["page_count"], 2)
         self.assertFalse(info["scanned"])
         self.assertTrue(info["can"]["redact"])
@@ -1468,7 +1471,7 @@ class ThePdfApiWritesOnlyToTheDraftFolder(unittest.TestCase):
     def test_a_missing_document_is_a_404_not_a_crash(self):
         import pdf_api
         with self.assertRaises(pdf_api.DocError):
-            pdf_api.load("999999")
+            pdf_api.load("999999", self.cid)
 
     def test_a_document_outside_the_vault_is_refused(self):
         import pdf_api
@@ -1479,7 +1482,7 @@ class ThePdfApiWritesOnlyToTheDraftFolder(unittest.TestCase):
         }
         try:
             with self.assertRaises(pdf_api.DocError):
-                pdf_api.load("1")
+                pdf_api.load("1", self.cid)
         finally:
             client_store.get_document = real
 
@@ -1492,7 +1495,7 @@ class ThePdfApiWritesOnlyToTheDraftFolder(unittest.TestCase):
         ).fetchone()
         conn.close()
         with self.assertRaises(pdf_api.DocError) as caught:
-            pdf_api.load(str(row["id"]))
+            pdf_api.load(str(row["id"]), self.cid)
         self.assertIn("not a PDF", str(caught.exception))
 
 
@@ -1544,9 +1547,16 @@ class ADocumentIdIsNotALicence(unittest.TestCase):
         except pdf_api.DocError as exc:
             self.assertEqual(str(exc), "Document not found.")
 
-    def test_no_scope_still_works_for_the_workbench(self):
+    def test_no_scope_is_refused(self):
+        """This test used to assert the opposite, on the grounds that the
+        workbench needed an unscoped read. It does not: its one mount site is
+        a client page, and it has always passed the client. The exception
+        existed only to permit the guard being skipped — and a caller with no
+        client in mind is precisely the one that has to be refused.
+        """
         import pdf_api
-        self.assertTrue(pdf_api.load(self.doc_id)[1])
+        with self.assertRaises(pdf_api.WrongClient):
+            pdf_api.load(self.doc_id, "")
 
     def test_a_scoped_post_is_refused_for_the_wrong_client(self):
         import pdf_api
@@ -3216,7 +3226,7 @@ class TheModelDocumentDescribesTheRealDesk(unittest.TestCase):
             eval_desk.score_backup(), eval_desk.score_filing(),
             eval_desk.score_governance(), eval_desk.score_access(),
             eval_desk.score_retention(), eval_desk.score_fence(),
-            eval_desk.score_residency(),
+            eval_desk.score_residency(), eval_desk.score_document_writes(),
         ])
         # score_retrieval needs a built index, so it is the only section not
         # counted here. The document's number must be that many more — an
@@ -3727,6 +3737,199 @@ class NoRouteWalksAroundTheClientBoundary(unittest.TestCase):
             cap = self.u.capability_for(list(route))
             self.assertIn(cap, holders, f"/{'/'.join(route)} needs {cap!r}, "
                                         "which no role has")
+
+class TheDocumentWritePathsAreScopedAndAttributed(unittest.TestCase):
+    """The desk can fill, annotate, redact, reorder, stamp and extract a
+    client's filed documents. Reading them was audited; writing was not.
+
+    The structure was already right — every action writes a new file into
+    99_AI_Drafts and the original is never touched — but two things were not.
+    """
+
+    def setUp(self):
+        import client_store, doc_action_log, tempfile
+        self.cs, self.dal = client_store, doc_action_log
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self._saved = (client_store.CLIENT_DATA_DIR, client_store.CLIENTS_DIR,
+                       client_store.CLIENT_DB, doc_action_log.ACTION_LOG)
+        client_store.CLIENT_DATA_DIR = root
+        client_store.CLIENTS_DIR = root / "clients"
+        client_store.CLIENT_DB = root / "clients.db"
+        doc_action_log.ACTION_LOG = root / "actions.db"
+
+    def tearDown(self):
+        (self.cs.CLIENT_DATA_DIR, self.cs.CLIENTS_DIR, self.cs.CLIENT_DB,
+         self.dal.ACTION_LOG) = self._saved
+        self.tmp.cleanup()
+
+    def _doc(self, name="Client A"):
+        import pdf_tools
+        cid = self.cs.create_client(name, "a@x.com", "0821111111")
+        self.cs.add_document(cid, "fna.pdf", pdf_tools.make_pdf(["Income R48000"]),
+                             "Signed FNA")
+        return cid, self.cs.get_client(cid)["documents"][0]["id"]
+
+    # --- the scope was opt-in by the caller ---------------------------------
+
+    def test_a_document_cannot_be_opened_without_naming_its_client(self):
+        """The guard read `if for_client and ...`, so omitting the scope
+        skipped it entirely — including for the chat agent, which is the exact
+        caller the docstring named as the reason the guard exists."""
+        import pdf_api
+        _cid, doc_id = self._doc()
+        with self.assertRaises(pdf_api.WrongClient):
+            pdf_api.load(doc_id, "")
+
+    def test_naming_the_wrong_client_is_refused(self):
+        import pdf_api
+        _a, doc_id = self._doc("Client A")
+        other, _ = self._doc("Client B")
+        with self.assertRaises(pdf_api.WrongClient):
+            pdf_api.load(doc_id, other)
+
+    def test_naming_the_right_client_works(self):
+        import pdf_api
+        cid, doc_id = self._doc()
+        doc, data = pdf_api.load(doc_id, cid)
+        self.assertEqual(doc["client_id"], cid)
+        self.assertTrue(data.startswith(b"%PDF"))
+
+    def test_a_refusal_never_confirms_the_document_exists(self):
+        """Saying "that belongs to someone else" is itself a leak."""
+        import pdf_api
+        _a, doc_id = self._doc("Client A")
+        other, _ = self._doc("Client B")
+        try:
+            pdf_api.load(doc_id, other)
+        except pdf_api.DocError as exc:
+            wrong_client = str(exc)
+        try:
+            pdf_api.load("99999", other)
+        except pdf_api.DocError as exc:
+            no_such = str(exc)
+        self.assertEqual(wrong_client, no_such)
+
+    def test_the_scope_has_no_default_to_forget(self):
+        """A parameter with a default is a parameter a caller can omit."""
+        import inspect, pdf_api
+        sig = inspect.signature(pdf_api.load)
+        self.assertIs(sig.parameters["for_client"].default,
+                      inspect.Parameter.empty)
+        self.assertIs(inspect.signature(pdf_api.describe)
+                      .parameters["for_client"].default, inspect.Parameter.empty)
+
+    # --- nobody was recorded ------------------------------------------------
+
+    def test_an_action_on_a_client_document_records_who_did_it(self):
+        """A filename with a timestamp in it is not an answer to "who
+        redacted this client's ID number"."""
+        import pdf_api, pdf_tools
+        cid, doc_id = self._doc()
+        doc, data = pdf_api.load(doc_id, cid)
+        pdf_api._save(doc, pdf_tools.stamp(data, "DRAFT"), "stamped", by="M. Naidoo")
+        rows = self.dal.for_client(cid)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["by"], "M. Naidoo")
+        self.assertEqual(rows[0]["action"], "stamped")
+        self.assertEqual(rows[0]["source"], "fna.pdf")
+
+    def test_an_unattributed_action_is_blank_not_invented(self):
+        """A log that invents an actor is worse than one that admits it does
+        not know."""
+        import pdf_api, pdf_tools
+        cid, doc_id = self._doc()
+        doc, data = pdf_api.load(doc_id, cid)
+        pdf_api._save(doc, pdf_tools.stamp(data, "DRAFT"), "stamped")
+        self.assertEqual(self.dal.for_client(cid)[0]["by"], "")
+
+    def test_the_actor_comes_from_the_credential_not_the_body(self):
+        src = _source("pdf_api.py")
+        self.assertIn("by = _actor(handler)", src)
+        self.assertNotIn('body.get("by")', src)
+
+    def test_every_write_path_is_attributed(self):
+        """One unthreaded call site is one action nobody is recorded for."""
+        src = _source("pdf_api.py")
+        calls = []
+        # Balanced, not a regex: the argument list contains nested calls like
+        # pdf_tools.annotate(data, notes), and stopping at the first ")"
+        # truncates the call before the part being checked for.
+        start = src.find("_save(doc,")
+        while start != -1:
+            depth, i = 0, src.index("(", start)
+            while i < len(src):
+                if src[i] == "(":
+                    depth += 1
+                elif src[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            calls.append(src[start:i + 1])
+            start = src.find("_save(doc,", i)
+        self.assertGreaterEqual(len(calls), 7)
+        for call in calls:
+            self.assertIn("by=by", call, call)
+
+    def test_logging_never_costs_the_adviser_their_draft(self):
+        import pdf_api, pdf_tools
+        cid, doc_id = self._doc()
+        doc, data = pdf_api.load(doc_id, cid)
+        self.dal.ACTION_LOG = Path(self.tmp.name) / "nope" / "x" / "y.db"
+        blocker = Path(self.tmp.name) / "nope"
+        blocker.write_text("i am a file", encoding="utf-8")
+        result = pdf_api._save(doc, pdf_tools.stamp(data, "DRAFT"), "stamped",
+                               by="M. Naidoo")
+        self.assertTrue(result["ok"])
+        self.assertTrue(Path(result["path"]).exists())
+
+    def test_the_original_is_never_touched(self):
+        """The property the whole design rests on."""
+        import pdf_api, pdf_tools
+        cid, doc_id = self._doc()
+        doc, before = pdf_api.load(doc_id, cid)
+        pdf_api._save(doc, pdf_tools.stamp(data=before, text="DRAFT"), "stamped",
+                      by="M. Naidoo")
+        _doc2, after = pdf_api.load(doc_id, cid)
+        self.assertEqual(before, after)
+
+    def test_a_draft_lands_where_ingest_will_not_read_it(self):
+        """A generated draft that got indexed would come back cited as filed
+        client evidence."""
+        import pdf_api, pdf_tools
+        cid, doc_id = self._doc()
+        doc, data = pdf_api.load(doc_id, cid)
+        res = pdf_api._save(doc, pdf_tools.stamp(data, "DRAFT"), "stamped")
+        self.assertIn(self.cs.AI_DRAFT_FOLDER, Path(res["path"]).parts)
+
+    # --- the fifth place ----------------------------------------------------
+
+    def test_erasure_reaches_the_action_log(self):
+        """Adding a store that holds client data without teaching erase()
+        about it is exactly the failure retention.py exists to prevent."""
+        import retention
+        cid, _doc_id = self._doc("Thabo Molefe")
+        self.dal.record_action(client_id=cid, action="redacted",
+                               source="fna.pdf", by="M. Naidoo")
+        self.assertEqual(retention.survey(cid).action_rows, 1)
+        keep = retention.ERASURE_LOG
+        retention.ERASURE_LOG = Path(self.tmp.name) / "erasures.db"
+        try:
+            retention.erase(cid, by="M. Naidoo", dry_run=False)
+        finally:
+            retention.ERASURE_LOG = keep
+        self.assertEqual(retention.survey(cid).action_rows, 0)
+        self.assertNotIn(b"Thabo", Path(self.dal.ACTION_LOG).read_bytes())
+
+    def test_the_survey_counts_it_before_anything_is_removed(self):
+        import retention
+        cid, _ = self._doc()
+        self.dal.record_action(client_id=cid, action="stamped", by="X")
+        s = retention.survey(cid)
+        self.assertEqual(s.action_rows, 1)
+        self.assertTrue(s.anything)
+        self.assertIn("document actions", retention.render_survey(s))
 
 
 if __name__ == "__main__":

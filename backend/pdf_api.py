@@ -33,22 +33,29 @@ class WrongClient(DocError):
     """The document belongs to someone else. Never a 'did you mean'."""
 
 
-def load(doc_id: str, for_client: str = "") -> Tuple[dict, bytes]:
+def load(doc_id: str, for_client: str) -> Tuple[dict, bytes]:
     """Fetch a filed document's bytes, refusing anything outside the vault.
 
     The stored path decides what gets read, so it is checked against the vault
     root before any read — a document row is not a licence to open a file.
 
-    `for_client` is the caller saying which client it believes this is. A
-    mismatch is refused. The workbench UI only ever lists the open client's
-    documents, but the chat agent names a document by id from a sentence, and
-    a wrong or invented id would otherwise reach into another client's file.
-    Anything that can name an id must say whose it is.
+    `for_client` is the caller saying which client it believes this is, and it
+    is **required**. The workbench only ever lists the open client's documents,
+    but the chat agent names a document by id out of a sentence, and a wrong or
+    invented id would otherwise reach into another client's file.
+
+    It used to default to "" and the check read `if for_client and ...`, which
+    made the guard opt-in by the caller — including by the exact caller the
+    docstring named as the reason for it. A caller with no client in mind is
+    precisely the one that must be refused, so an empty scope is now a refusal
+    rather than a pass.
     """
     doc = client_store.get_document(doc_id)
     if not doc:
         raise DocError("Document not found.")
-    if for_client and str(doc.get("client_id") or "") != str(for_client):
+    if not str(for_client or "").strip():
+        raise WrongClient("Document not found.")
+    if str(doc.get("client_id") or "") != str(for_client):
         # Deliberately the same wording as "not found": confirming that a
         # document exists but belongs to someone else is itself a leak.
         raise WrongClient("Document not found.")
@@ -70,13 +77,25 @@ def _stamped_name(original: str, suffix: str, ext: str = ".pdf") -> str:
     return f"{stem} ({suffix} {when}){ext}"
 
 
-def _save(doc: dict, data: bytes, suffix: str, ctype="application/pdf") -> dict:
+def _save(doc: dict, data: bytes, suffix: str, ctype="application/pdf",
+          by: str = "") -> dict:
     ext = ".md" if ctype.startswith("text/") else ".pdf"
     name = _stamped_name(doc.get("filename", ""), suffix, ext)
     if ext == ".md":
         path = client_store.add_generated_file(doc["client_id"], name, data.decode("utf-8"))
     else:
         path = client_store.add_generated_bytes(doc["client_id"], name, data, ctype)
+    # Who did this, recorded where the approvals and the answers are recorded.
+    # "Who redacted this client's ID number, and when" is a question asked at a
+    # review, and until now the only answer the desk had was a timestamp in a
+    # filename. Never raises into the write path: a draft that saved but was
+    # not logged is better than a draft the adviser has lost.
+    try:
+        from doc_action_log import record_action
+        record_action(client_id=doc.get("client_id", ""), action=suffix,
+                      source=doc.get("filename", ""), saved_as=name, by=by)
+    except Exception:
+        pass
     return {
         "ok": True,
         "saved_as": name,
@@ -84,6 +103,7 @@ def _save(doc: dict, data: bytes, suffix: str, ctype="application/pdf") -> dict:
         "folder": client_store.AI_DRAFT_FOLDER,
         "doc_type": client_store.AI_DRAFT_TYPE,
         "original_untouched": doc.get("filename", ""),
+        "by": by,
         "note": (
             "Saved as a new draft. The original is unchanged — a filed client "
             "document is the signed record and is never edited in place."
@@ -91,7 +111,7 @@ def _save(doc: dict, data: bytes, suffix: str, ctype="application/pdf") -> dict:
     }
 
 
-def describe(doc_id: str, for_client: str = "") -> dict:
+def describe(doc_id: str, for_client: str) -> dict:
     """Everything the desk needs to show the document and reason about it."""
     doc, data = load(doc_id, for_client)
     pages = pdf_tools.read_pages(data)
@@ -136,6 +156,21 @@ def describe(doc_id: str, for_client: str = "") -> dict:
     }
 
 
+def _actor(handler) -> str:
+    """Who is making this request, from the credential.
+
+    Falls back to an empty string rather than to a guess: an unattributed
+    action is honestly unattributed, and inventing "the desk owner" for a
+    request that never proved who it was would be worse than a blank.
+    """
+    try:
+        import desk_extra
+        user, _why = desk_extra._who(handler, "clients")
+        return user.name if user else ""
+    except Exception:
+        return ""
+
+
 def _client_scope(handler) -> str:
     """?client_id=... from the request. The handler only splits the path, so
     the query has to be read here rather than assumed onto it."""
@@ -161,6 +196,9 @@ def handle_post(handler, parts, body) -> bool:
     if len(parts) != 4 or parts[:2] != ["api", "pdf"]:
         return False
     doc_id, action = parts[2], parts[3]
+    # From the credential, never from the body — the same rule the register and
+    # the erasure path follow. A name the caller supplies is a claim.
+    by = _actor(handler)
     try:
         doc, data = load(doc_id, str(body.get("client_id") or ""))
     except DocError as exc:
@@ -170,7 +208,7 @@ def handle_post(handler, parts, body) -> bool:
     try:
         if action == "fill":
             out, missing = pdf_tools.fill_form(data, dict(body.get("values") or {}))
-            result = _save(doc, out, "filled")
+            result = _save(doc, out, "filled", by=by)
             result["unknown_fields"] = missing
             if missing:
                 result["warning"] = (
@@ -193,7 +231,7 @@ def handle_post(handler, parts, body) -> bool:
             if not notes:
                 handler.send_json({"error": "No note text given."}, 400)
                 return True
-            handler.send_json(_save(doc, pdf_tools.annotate(data, notes), "annotated"))
+            handler.send_json(_save(doc, pdf_tools.annotate(data, notes), "annotated", by=by))
             return True
 
         if action == "redact":
@@ -220,7 +258,7 @@ def handle_post(handler, parts, body) -> bool:
                     }, 400)
                     return True
                 out, notes = pdf_tools.redact_regions(data, regions)
-                result = _save(doc, out, "redacted")
+                result = _save(doc, out, "redacted", by=by)
                 result["removed"] = sorted({r.label for r in regions})
                 result["scanned"] = True
                 result["notes"] = notes
@@ -242,7 +280,7 @@ def handle_post(handler, parts, body) -> bool:
                              "Check the exact text, or pick a pattern.",
                 }, 400)
                 return True
-            result = _save(doc, out, "redacted")
+            result = _save(doc, out, "redacted", by=by)
             result["removed"] = removed
             result["note"] += (
                 " The removed text is gone from the new file's content, not "
@@ -262,7 +300,7 @@ def handle_post(handler, parts, body) -> bool:
             if out is data:
                 handler.send_json({"error": "Nothing to do — give select or rotate."}, 400)
                 return True
-            handler.send_json(_save(doc, out, "pages"))
+            handler.send_json(_save(doc, out, "pages", by=by))
             return True
 
         if action == "stamp":
@@ -275,7 +313,7 @@ def handle_post(handler, parts, body) -> bool:
                 where=str(body.get("where") or "top"),
                 pages=str(body.get("pages") or ""),
             )
-            handler.send_json(_save(doc, out, "stamped"))
+            handler.send_json(_save(doc, out, "stamped", by=by))
             return True
 
         if action == "extract":
@@ -288,7 +326,7 @@ def handle_post(handler, parts, body) -> bool:
                     return True
                 pages = pdf_tools.ocr_pages(data)
                 md = pdf_tools.ocr_markdown(pages, doc.get("filename", ""))
-                result = _save(doc, md.encode("utf-8"), "ocr draft", "text/markdown")
+                result = _save(doc, md.encode("utf-8"), "ocr draft", "text/markdown", by=by)
                 result["scanned"] = True
                 result["ocr"] = True
                 result["lowest_confidence"] = round(
@@ -300,7 +338,7 @@ def handle_post(handler, parts, body) -> bool:
                 handler.send_json(result)
                 return True
             md = pdf_tools.to_markdown(data, doc.get("filename", ""))
-            handler.send_json(_save(doc, md.encode("utf-8"), "draft", "text/markdown"))
+            handler.send_json(_save(doc, md.encode("utf-8"), "draft", "text/markdown", by=by))
             return True
 
     except pdf_tools.NotRedactable as exc:

@@ -39,7 +39,7 @@ reads it to skim.
 
 ## The part that is easy to get wrong
 
-A client's personal information lives in **four** places, built at different
+A client's personal information lives in **five** places, built at different
 times by different code:
 
 1. the vault files under `clients/<id>/`
@@ -48,6 +48,13 @@ times by different code:
    text of their documents
 4. **the answer log**, where an answer that quoted their file contains their
    information in its own text
+5. **the document action log**, which records what was done to their documents
+   and by whom
+
+The fifth was added after this module was written, and adding it without
+teaching `erase()` about it would have been precisely the failure described
+here. It was surveyed and cleared in the same change, and the erasure test
+would have gone red otherwise.
 
 An erasure that removes the folder and the database rows looks complete, is
 reported as complete, and leaves the desk able to quote the client's income and

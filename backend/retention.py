@@ -12,7 +12,7 @@ be able to erase completely when it does.
 
 The part worth building carefully is *completely*.
 
-A client's personal information lives in four places, and they were built at
+A client's personal information lives in five places, and they were built at
 different times by different code:
 
   1. the vault files under clients/<id>/
@@ -21,6 +21,8 @@ different times by different code:
      text of their documents
   4. the answer log, where an answer that quoted their file contains their
      information in its own text
+  5. the document action log, which records what was done to their documents
+     and by whom
 
 An erasure that removes the folder and the database rows looks complete, is
 reported as complete, and leaves the desk able to quote the client's income
@@ -115,6 +117,7 @@ class Survey:
     db_rows: Dict[str, int] = field(default_factory=dict)
     index_pages: int = 0
     log_rows: int = 0
+    action_rows: int = 0
     last_activity: str = ""
 
     @property
@@ -124,7 +127,7 @@ class Survey:
     @property
     def anything(self) -> bool:
         return bool(self.files or self.total_db_rows or self.index_pages
-                    or self.log_rows)
+                    or self.log_rows or self.action_rows)
 
 
 # The client-database tables holding personal information, in delete order:
@@ -194,6 +197,16 @@ def survey(client_id: str) -> Survey:
             conn.close()
     except Exception:
         s.log_rows = 0
+
+    # The fifth place, added after this module was written. Adding a store that
+    # holds client data without teaching erase() about it is precisely the
+    # failure this module exists to prevent, so it is surveyed here and cleared
+    # below in the same change.
+    try:
+        import doc_action_log
+        s.action_rows = doc_action_log.count_for(client_id)
+    except Exception:
+        s.action_rows = 0
 
     return s
 
@@ -268,6 +281,7 @@ class Receipt:
     db_rows: int = 0
     index_pages: int = 0
     log_rows: int = 0
+    action_rows: int = 0
     complete: bool = False
     dry_run: bool = True
     problems: List[str] = field(default_factory=list)
@@ -290,7 +304,7 @@ def erase(client_id: str, by: str, reason: str = "",
     r = Receipt(client_id=client_id, at=_now(), by=by or "",
                 files=len(before.files), db_rows=before.total_db_rows,
                 index_pages=before.index_pages, log_rows=before.log_rows,
-                dry_run=dry_run)
+                action_rows=before.action_rows, dry_run=dry_run)
     if not (by or "").strip():
         r.problems.append("an erasure needs a name against it")
         return r
@@ -342,13 +356,19 @@ def erase(client_id: str, by: str, reason: str = "",
     except Exception as exc:
         r.problems.append(f"answer log: {exc}")
 
+    try:
+        import doc_action_log
+        doc_action_log.erase_client(client_id)
+    except Exception as exc:
+        r.problems.append(f"document action log: {exc}")
+
     after = survey(client_id)
     r.complete = not after.anything and not r.problems
     if after.anything:
         r.problems.append(
             f"still present: {len(after.files)} files, {after.total_db_rows} "
             f"database rows, {after.index_pages} index pages, "
-            f"{after.log_rows} log rows")
+            f"{after.log_rows} log rows, {after.action_rows} action rows")
 
     conn = connect()
     try:
@@ -410,6 +430,8 @@ def render_survey(s: Survey) -> str:
                  "   the extracted text of their documents")
     lines.append(f"  {'answer log rows':22} {s.log_rows:>5}"
                  "   redacted, not deleted")
+    lines.append(f"  {'document actions':22} {s.action_rows:>5}"
+                 "   who did what to their files")
     return "\n".join(lines) + "\n"
 
 

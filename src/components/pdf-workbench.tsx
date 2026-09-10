@@ -29,7 +29,10 @@ import { Textarea } from "@/components/ui/textarea";
  * change the document on the left. That is not a setting.
  */
 
-type Props = { docId: number | string; clientId?: string; onClose?: () => void };
+// clientId is required, not optional. The backend refuses an unscoped read
+// now, and the one mount site is a client page that always has it — leaving
+// the prop optional only meant the type system stopped saying so.
+type Props = { docId: number | string; clientId: string; onClose?: () => void };
 
 const ACTION_LABEL: Record<PdfAction, string> = {
   fill: "Fill form",

@@ -586,6 +586,94 @@ def score_residency(verbose=False) -> Score:
     return s
 
 
+def score_document_writes(verbose=False) -> Score:
+    """Writing to a client's documents, not just reading them.
+
+    The structure was right — every action writes a new file and the original
+    is untouched — but the client scope was opt-in by the caller and nobody was
+    recorded as having done anything.
+    """
+    import inspect, tempfile
+    from pathlib import Path as P
+    import client_store, doc_action_log, pdf_api, pdf_tools, retention
+
+    s = Score("document writes")
+    saved = (client_store.CLIENT_DATA_DIR, client_store.CLIENTS_DIR,
+             client_store.CLIENT_DB, doc_action_log.ACTION_LOG,
+             retention.ERASURE_LOG)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = P(tmp)
+        client_store.CLIENT_DATA_DIR = root
+        client_store.CLIENTS_DIR = root / "clients"
+        client_store.CLIENT_DB = root / "clients.db"
+        doc_action_log.ACTION_LOG = root / "actions.db"
+        retention.ERASURE_LOG = root / "erasures.db"
+        try:
+            a = client_store.create_client("Client A", "a@x.com", "0821111111")
+            b = client_store.create_client("Client B", "b@x.com", "0822222222")
+            client_store.add_document(a, "fna.pdf",
+                                      pdf_tools.make_pdf(["Income R48000"]),
+                                      "Signed FNA")
+            doc_id = client_store.get_client(a)["documents"][0]["id"]
+
+            # The scope must be required, not merely honoured when supplied.
+            sig = inspect.signature(pdf_api.load)
+            s.check(sig.parameters["for_client"].default is inspect.Parameter.empty,
+                    "the client scope has a default, so a caller can omit it")
+            for scope, why in ((b, "another client's id"), ("", "no scope at all")):
+                try:
+                    pdf_api.load(doc_id, scope)
+                    s.check(False, f"a document opened with {why}")
+                except pdf_api.DocError:
+                    s.check(True, "")
+            doc, data = pdf_api.load(doc_id, a)
+            s.check(data.startswith(b"%PDF"), "the right client could not open it")
+
+            # Every write path attributed, checked on balanced call text.
+            src = P(pdf_api.__file__).read_text(encoding="utf-8")
+            calls, start = [], src.find("_save(doc,")
+            while start != -1:
+                depth, i = 0, src.index("(", start)
+                while i < len(src):
+                    if src[i] == "(":
+                        depth += 1
+                    elif src[i] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    i += 1
+                calls.append(src[start:i + 1])
+                start = src.find("_save(doc,", i)
+            s.check(len(calls) >= 7, f"only {len(calls)} write paths found")
+            s.check(all("by=by" in c for c in calls),
+                    "a write path saves without recording who did it")
+            s.check("by = _actor(handler)" in src and 'body.get("by")' not in src,
+                    "the actor comes from the request body")
+
+            pdf_api._save(doc, pdf_tools.stamp(data, "DRAFT"), "stamped",
+                          by="M. Naidoo")
+            rows = doc_action_log.for_client(a)
+            s.check(len(rows) == 1 and rows[0]["by"] == "M. Naidoo",
+                    "the action was not recorded against a person")
+            _doc2, after = pdf_api.load(doc_id, a)
+            s.check(after == data, "the original document was modified")
+
+            # The fifth place erasure has to reach.
+            surveyed = retention.survey(a)
+            s.check(surveyed.action_rows == 1,
+                    "the erasure survey does not count document actions")
+            retention.erase(a, by="M. Naidoo", dry_run=False)
+            s.check(retention.survey(a).action_rows == 0,
+                    "erasure left the document action log behind")
+            if verbose:
+                print(doc_action_log.render(a))
+        finally:
+            (client_store.CLIENT_DATA_DIR, client_store.CLIENTS_DIR,
+             client_store.CLIENT_DB, doc_action_log.ACTION_LOG,
+             retention.ERASURE_LOG) = saved
+    return s
+
+
 def score_backup(verbose=False) -> Score:
     """The properties that separate a backup from a hope."""
     import sqlite3, tempfile
@@ -797,6 +885,7 @@ def main() -> int:
         score_governance(args.verbose),
         score_access(args.verbose),
         score_retention(args.verbose),
+        score_document_writes(args.verbose),
         score_fence(args.verbose),
         score_residency(args.verbose),
     ]
