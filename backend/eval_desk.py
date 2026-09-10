@@ -297,6 +297,30 @@ def score_access(verbose=False) -> Score:
             # Anchored on this file, not on the working directory: a relative
             # path here passes from backend/ and fails from the repo root,
             # making the check about where it was run rather than about code.
+            # No second door to the client vault. An approver being refused
+            # /api/clients is worth nothing if another route serves the same
+            # information — three did, all written the same week as the rule.
+            for route in (["api", "clients"], ["api", "clients", "x"],
+                          ["api", "documents", "d1"], ["api", "pdf", "d1"],
+                          ["api", "retention", "x"]):
+                cap = du.capability_for(route)
+                s.check(cap not in du.CAPABILITIES[du.APPROVER],
+                        f"/{'/'.join(route)} is open to an approver")
+            erase = du.capability_for(["api", "retention", "erase"])
+            read = du.capability_for(["api", "retention", "x"])
+            for role, caps in du.CAPABILITIES.items():
+                if erase in caps:
+                    s.check(read in caps,
+                            f"{role} may erase a client but not read one")
+            holders = set()
+            for caps in du.CAPABILITIES.values():
+                holders |= caps
+            s.check(du.capability_for(["api", "ingest", "paste"]) == "documents",
+                    "putting a document into the index is an ordinary question")
+            s.check(all(c in holders for c in
+                        (du.capability_for(["api", "pdf"]), erase, read)),
+                    "a route needs a capability no role holds")
+
             approve = (P(__file__).resolve().parent / "desk_extra.py").read_text(
                 encoding="utf-8")
             approve = approve[approve.index('["api", "register", "approve"]'):]

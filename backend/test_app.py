@@ -2936,8 +2936,10 @@ class ErasingAClientReachesEverywhereTheyExist(unittest.TestCase):
     def test_reading_the_due_list_is_not_the_same_as_erasing(self):
         import desk_users
         self.assertEqual(desk_users.capability_for(["api", "retention"]), "clients")
+        # Its own admin-only capability, not approve_documents — that let an
+        # approver destroy client records they are not allowed to read.
         self.assertEqual(desk_users.capability_for(["api", "retention", "erase"]),
-                         "approve_documents")
+                         "erase_clients")
 
     def test_nothing_is_erased_on_a_timer(self):
         """A desk that quietly destroyed records a regulator may still call for
@@ -3588,6 +3590,143 @@ class TheEvidenceIsReachableFromTheDesk(unittest.TestCase):
         able to answer without the reader opening the source."""
         import desk_extra, inspect
         self.assertIn("minutes_by_hand", inspect.getsource(desk_extra.handle_get))
+
+class NoRouteWalksAroundTheClientBoundary(unittest.TestCase):
+    """An approver is refused /api/clients. That refusal is only worth
+    anything if there is no second door.
+
+    Three had been left open, all in code written the same week as the rule
+    itself: the answer log (which quotes client files back), /api/pdf (which
+    opens documents out of the client vault by id), and erasure (filed under
+    approve_documents, so an approver could destroy records they may not
+    read). None of them looked like client routes; all three were.
+
+    These are written as properties of the whole route table rather than as
+    one assertion per route, because the next route added is the one nobody
+    thinks to add an assertion for.
+    """
+
+    def setUp(self):
+        import desk_users
+        self.u = desk_users
+
+    def _routes(self):
+        """Every route literal the server actually matches on."""
+        import re
+        here = Path(__file__).parent
+        src = "".join((here / name).read_text(encoding="utf-8")
+                      for name in ("desk_extra.py", "app.py", "pdf_api.py"))
+        found = set()
+        for raw in re.findall(r'parts(?:\[:\d+\])?\s*==\s*\[([^\]]+)\]', src):
+            parts = tuple(p.strip().strip('"').strip("'") for p in raw.split(","))
+            if parts and parts[0] == "api":
+                found.add(parts)
+        return sorted(found)
+
+    def test_the_route_table_was_actually_read(self):
+        """A property over an empty set passes and proves nothing."""
+        routes = self._routes()
+        self.assertGreater(len(routes), 15, "the route scan found almost nothing")
+        self.assertIn(("api", "clients"), routes)
+
+    def test_every_route_reaching_the_client_vault_needs_the_client_right(self):
+        """The rule, stated once, over every route that touches client storage."""
+        import re
+        here = Path(__file__).parent
+        # Modules that read the client vault at all. A route served by one of
+        # these is a candidate; a route served by none of them cannot leak.
+        vault_readers = {
+            "pdf_api.py": ("api", "pdf"),
+            "client_store.py": None,
+        }
+        pdf_src = (here / "pdf_api.py").read_text(encoding="utf-8")
+        self.assertIn("client_store", pdf_src,
+                      "pdf_api no longer reads the client vault — retune this test")
+        self.assertEqual(self.u.capability_for(["api", "pdf", "doc-1"]), "clients")
+        self.assertEqual(self.u.capability_for(["api", "pdf"]), "clients")
+
+    def test_an_approver_cannot_open_a_client_document(self):
+        for route in (["api", "clients"], ["api", "clients", "abc"],
+                      ["api", "documents", "d1"], ["api", "pdf", "d1"],
+                      ["api", "retention", "abc"]):
+            cap = self.u.capability_for(route)
+            self.assertNotIn(cap, self.u.CAPABILITIES[self.u.APPROVER],
+                             f"/{'/'.join(route)} is open to an approver")
+
+    def test_nobody_can_destroy_what_they_may_not_read(self):
+        """The worst of the three: erasure under approve_documents let an
+        approver delete a client file they are refused sight of."""
+        erase = self.u.capability_for(["api", "retention", "erase"])
+        read = self.u.capability_for(["api", "retention", "abc"])
+        for role, caps in self.u.CAPABILITIES.items():
+            if erase in caps:
+                self.assertIn(read, caps,
+                              f"{role} may erase a client but not read one")
+
+    def test_erasing_is_admin_only(self):
+        erase = self.u.capability_for(["api", "retention", "erase"])
+        self.assertEqual(
+            [r for r, caps in self.u.CAPABILITIES.items() if erase in caps],
+            [self.u.ADMIN])
+
+    def test_the_answer_log_withholds_client_work_from_those_refused_it(self):
+        """The log quotes client files back. Gating it on "ask" handed an
+        approver the information /api/clients refuses them."""
+        import answer_log, tempfile, json
+        with tempfile.TemporaryDirectory() as d:
+            keep = answer_log.LOG_DB
+            answer_log.LOG_DB = Path(d) / "a.db"
+            try:
+                answer_log.record(question="What cover does Thabo Molefe have?",
+                                  answer="Thabo Molefe's FNA shows R2.4m.",
+                                  room="roa", client_id="thabo", results=[])
+                answer_log.record(question="What is the waiting period?",
+                                  answer="Six months.", room="fa", results=[])
+                hidden = answer_log.recent(5, client_work=False)
+                self.assertNotIn("Thabo", json.dumps(hidden))
+                # The row survives, so the totals stay honest.
+                self.assertEqual(len(hidden), 2)
+                # Newest first, so the product answer leads and the client
+                # one follows.
+                self.assertEqual([r["withheld"] for r in hidden], [False, True])
+                # And the product answer is untouched.
+                self.assertEqual(hidden[0]["preview"], "Six months.")
+            finally:
+                answer_log.LOG_DB = keep
+
+    def test_the_full_answer_route_checks_before_it_serves(self):
+        src = _source("desk_extra.py")
+        block = src[src.index('len(parts) == 3 and parts[:2] == ["api", "answers"]'):]
+        # To the end of the route, not to the first `return True` — that one
+        # belongs to the refusal branch and slicing there hides the check.
+        block = block[:block.index('if parts == ["api", "retention"]')]
+        self.assertIn('_who(handler, "clients")', block)
+        self.assertIn("403", block)
+        self.assertLess(block.index("_who"), block.index("send_json(row"))
+
+    def test_the_list_route_narrows_rather_than_refusing(self):
+        """A compliance reader should still get real totals; they just do not
+        get the client text behind them."""
+        src = _source("desk_extra.py")
+        self.assertIn('client_work=_may(handler, "clients")', src)
+
+    def test_putting_a_document_into_the_index_is_not_an_ordinary_question(self):
+        """In controlled mode ingestion is exactly what the register governs."""
+        self.assertEqual(self.u.capability_for(["api", "ingest", "paste"]),
+                         "documents")
+        self.assertEqual(self.u.capability_for(["api", "ingest", "guides"]),
+                         "documents")
+
+    def test_every_route_maps_to_a_capability_some_role_actually_holds(self):
+        """A capability no role has is a route nobody can reach — which reads
+        as a broken desk, not as a policy."""
+        holders = set()
+        for caps in self.u.CAPABILITIES.values():
+            holders |= caps
+        for route in self._routes():
+            cap = self.u.capability_for(list(route))
+            self.assertIn(cap, holders, f"/{'/'.join(route)} needs {cap!r}, "
+                                        "which no role has")
 
 
 if __name__ == "__main__":

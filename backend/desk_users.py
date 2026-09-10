@@ -67,8 +67,12 @@ CAPABILITIES = {
     # An approver is not an adviser's manager — they read documents and sign
     # them off. Client files are not theirs to open.
     APPROVER: frozenset({"ask", "documents", "approve_documents"}),
+    # erase_clients is admin-only and deliberately separate from
+    # approve_documents. Erasure was briefly filed under it, which let an
+    # approver destroy records they are not allowed to read — a worse position
+    # than either full access or none.
     ADMIN: frozenset({"ask", "clients", "documents", "approve_documents",
-                      "manage_users"}),
+                      "erase_clients", "manage_users"}),
 }
 
 # The role a trusted local request runs as. On a single-adviser desk the person
@@ -266,6 +270,10 @@ def capability_for(parts: Sequence[str]) -> str:
     if p[:2] == ["api", "register"]:
         # Reading the register is not the same as signing something off.
         return "approve_documents" if len(p) > 2 else "documents"
+    # Putting a document into the index is a governance act: in controlled mode
+    # it is exactly what the register decides. It is not an ordinary question.
+    if p[:2] == ["api", "ingest"]:
+        return "documents"
     if p[:2] == ["api", "users"]:
         return "manage_users"
     # Where the client data lives is an answer about the vault.
@@ -273,10 +281,14 @@ def capability_for(parts: Sequence[str]) -> str:
         return "clients"
     # Reading what is past its retention date is not the same as destroying it.
     if p[:2] == ["api", "retention"]:
-        return "approve_documents" if p[2:3] == ["erase"] else "clients"
+        return "erase_clients" if p[2:3] == ["erase"] else "clients"
     # Both the client list and the client-document blobs. An approver reads
     # product documents; a client's file is not theirs to open.
-    if p[:2] in (["api", "clients"], ["api", "documents"]):
+    #
+    # /api/pdf belongs here too, and did not at first: it opens documents out
+    # of the client vault by id, so leaving it at "ask" handed an approver the
+    # client files that /api/clients refuses them, one route over.
+    if p[:2] in (["api", "clients"], ["api", "documents"], ["api", "pdf"]):
         return "clients"
     return "ask"
 

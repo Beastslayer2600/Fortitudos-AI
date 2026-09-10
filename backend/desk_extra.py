@@ -42,6 +42,15 @@ def list_learn_docs():
 
 
 
+def _may(handler, capability: str) -> bool:
+    """Whether this request may do something, without refusing it outright.
+
+    For the places where a lack of access narrows what comes back rather than
+    blocking the whole request.
+    """
+    return _who(handler, capability)[0] is not None
+
+
 def _who(handler, capability: str):
     """(user, why not) for this request. Identity comes from the credential.
 
@@ -85,7 +94,8 @@ def handle_get(handler, parts) -> bool:
             "high_risk": rep.high_risk,
             "minutes_by_hand": answer_log.MINUTES_BY_HAND,
             "verdict_options": answer_log.VERDICTS,
-            "recent": answer_log.recent(30),
+            "recent": answer_log.recent(
+                30, client_work=_may(handler, "clients")),
         })
         return True
 
@@ -132,6 +142,13 @@ def handle_get(handler, parts) -> bool:
             row = answer_log.get(int(parts[2]))
         except ValueError:
             row = None
+        if row and (row.get("client_id") or ""):
+            # The full text of a client-file answer is client information. A
+            # reader refused /api/clients must not get it one route over.
+            user, why = _who(handler, "clients")
+            if user is None:
+                handler.send_json({"error": why}, 403)
+                return True
         handler.send_json(row or {"error": "No such answer."}, 200 if row else 404)
         return True
 
@@ -307,10 +324,11 @@ def handle_post(handler, parts, body) -> bool:
 
     if parts == ["api", "retention", "erase"]:
         import retention
-        # Erasure is destructive and irreversible, so it takes the same
-        # capability as approving a document and the same rule about names:
-        # the eraser is whoever the credential says, not whoever the body says.
-        user, why = _who(handler, "approve_documents")
+        # Erasure is destructive and irreversible, and takes its own
+        # admin-only capability. It was briefly filed under approve_documents,
+        # which let an approver destroy client records they may not read.
+        # The eraser is whoever the credential says, not whoever the body says.
+        user, why = _who(handler, "erase_clients")
         if user is None:
             handler.send_json({"error": why}, 403)
             return True

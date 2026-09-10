@@ -38,9 +38,9 @@ and the caller does not get to say who they are.
 
 | Role | May |
 |---|---|
-| `adviser` | ask, open client files, read the document register |
-| `approver` | ask, read the register, **approve and withdraw documents** |
-| `admin` | all of the above, plus manage users |
+| `adviser` | ask, open client files, read and add to the index |
+| `approver` | ask, read the index, **approve and withdraw documents** |
+| `admin` | all of the above, plus **erase clients** and manage users |
 
 An approver is not an adviser's manager. They read product documents and sign
 them off; a client's file is not theirs to open.
@@ -49,6 +49,34 @@ Routes are mapped to capabilities in one table rather than checked one by one,
 and the check runs in the request guard before any route does — so a route
 added later inherits a decision instead of quietly having none. A route nobody
 has classified falls back to the lowest capability, not to no capability.
+
+### The second-door problem
+
+Refusing an approver `/api/clients` is worth nothing if another route serves
+the same information. Three did, all written in the same week as the rule
+itself, and none of them looked like a client route:
+
+- **the answer log**, which quotes client files back inside the answers it
+  stores
+- **`/api/pdf`**, which opens documents out of the client vault by id
+- **erasure**, which had been filed under `approve_documents` — so an approver
+  could destroy client records they are not allowed to read, which is a worse
+  position than either full access or none
+
+All three are closed. Erasure now has its own admin-only capability;
+`/api/pdf` needs the client right; and the answer log **withholds** the text of
+client-derived answers from a reader who lacks it, rather than refusing the
+whole request. The rows stay, so the totals a compliance reader sees are still
+the real totals — they just do not get the client text behind them.
+
+Putting a document into the index (`/api/ingest/*`) now needs the index right
+rather than being an ordinary question. In `controlled` mode that is precisely
+what the register governs.
+
+The tests for this are written as properties of the whole route table — *no
+route reaching the client vault may be open to an approver*, *nobody may
+destroy what they may not read* — rather than one assertion per route. The
+next route added is the one nobody thinks to write an assertion for.
 
 ## Nothing changes for one adviser on one laptop
 

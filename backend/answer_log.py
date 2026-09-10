@@ -366,12 +366,26 @@ def render(rep: Report) -> str:
 PREVIEW_CHARS = 400
 
 
-def recent(limit: int = 20, only_unmarked: bool = False) -> List[dict]:
+# What a reader who may not open client files sees in place of an answer that
+# was built from one. The row stays, so the counts stay honest; the content
+# goes, because the access rules say this reader may not read it.
+WITHHELD = "[client work — you do not have access to client files]"
+
+
+def recent(limit: int = 20, only_unmarked: bool = False,
+           client_work: bool = True) -> List[dict]:
     """The most recent answers, with enough of each to judge it.
 
     The first version returned the question and the verdict but not the answer,
     which made the marking screen impossible to use honestly: nobody can say
     whether an answer was wrong while looking only at the question.
+
+    `client_work=False` withholds the text of answers built from a client file
+    while keeping the rows. An approver is refused /api/clients outright, and
+    the log would otherwise hand them the same information one route over — the
+    same shape of leak as a room citing another client's file, and just as
+    invisible. Keeping the row means the totals a compliance reader sees are
+    still the real totals.
     """
     conn = connect()
     try:
@@ -388,6 +402,13 @@ def recent(limit: int = 20, only_unmarked: bool = False) -> List[dict]:
     for row in rows:
         item = dict(row)
         text = item.pop("answer") or ""
+        if not client_work and (item.get("client_id") or ""):
+            item["question"] = WITHHELD
+            item["verdict_note"] = ""
+            item["withheld"] = True
+            text = WITHHELD
+        else:
+            item["withheld"] = False
         item["preview"] = text[:PREVIEW_CHARS]
         item["truncated"] = len(text) > PREVIEW_CHARS
         # The flags the desk raised on itself, as one list the UI can render
