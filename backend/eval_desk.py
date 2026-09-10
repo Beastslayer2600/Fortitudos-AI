@@ -534,6 +534,29 @@ def score_residency(verbose=False) -> Score:
 
     s.check("does not check that the disk is encrypted" in res.render(),
             "the report no longer admits what it cannot check")
+
+    # The scan must cover the whole desk. Reading the backend only is how the
+    # first version reported clean while the frontend held a path to a hosted
+    # model and a platform sign-in layer.
+    scanned = {p.as_posix() for p in res.scanned_files()}
+    s.check(any("/src/lib/" in p for p in scanned),
+            "the residency scan does not read the frontend")
+    s.check(not any("node_modules" in p for p in scanned),
+            "the residency scan is reading node_modules")
+
+    off = {e.host for e in res.check().can_leave_the_machine}
+    s.check("api.x.ai" in off,
+            "the opt-in hosted model is no longer reported")
+    s.check("Off by configuration, which is not the same as absent"
+            in res.render(),
+            "things that are merely switched off stopped being listed")
+
+    llm = P(res.ROOT) / "src" / "lib" / "llm.ts"
+    if llm.exists():
+        auto = llm.read_text(encoding="utf-8")
+        auto = auto[auto.index("// auto is local"):]
+        s.check("callXai" not in auto,
+                "the local model path falls back to the hosted one again")
     if verbose:
         print(res.render())
     return s

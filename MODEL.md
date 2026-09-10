@@ -22,11 +22,18 @@ adviser's own machine.
 | Reply length cap | 400 tokens |
 | Context window | 8192 tokens (raised per call for whole-page authoring) |
 
-**Nothing leaves the machine.** Every job is pinned to a local host by
-`compute.py`, and the one job permitted to use a remote model is Craft — the
-web-design room, which never touches client data or product literature. There
-is no cloud fallback: if the local model is unavailable the desk fails rather
-than reaching out.
+**Nothing leaves the machine in normal operation.** Every job is pinned to a
+local host by `compute.py`, and the one job permitted to use a remote model is
+Craft — the web-design room, which never touches client data or product
+literature. **There is no cloud fallback**: if the local model is unavailable
+the desk fails rather than reaching out, and it says so.
+
+There is, however, an opt-in path to a hosted model (`FORTITUDO_LLM=xai`, plus
+an API key), and the Social room uses it whenever a key is present. That is off
+in a default install and the local path never falls back to it — but *off* is
+not *absent*, and a reader of this document would otherwise take away that the
+software cannot talk to a third-party model at all. `RESIDENCY.md` lists every
+such path.
 
 **The model is small.** Llama 3.2 3B is adequate for a personal research tool
 and is *not* adequate for advice-grade retrieval in a firm. This is a known
@@ -137,7 +144,7 @@ CPU. `FORTITUDO_THINK=1` forces the reasoning pass on everywhere.
 
 Honest, because this is the part a compliance reviewer will press on.
 
-**Measured.** 192 automated evaluation cases across routing, retrieval,
+**Measured.** 197 automated evaluation cases across routing, retrieval,
 grounding, room separation, the HTML gate, version conflict, reasoning depth,
 PDF handling, client scoping, backup, filing rails, ingestion governance,
 access control, retention, the ring-fence, and data residency. These run

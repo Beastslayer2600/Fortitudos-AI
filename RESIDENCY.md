@@ -67,9 +67,15 @@ There is no cloud fallback. If the local model is unavailable the desk fails.
 
 ## Outbound
 
-Every external host named anywhere in the source, **found by reading the source
-each time** rather than from a list somebody maintains. A maintained list is
-precisely what goes stale.
+Every external host named anywhere in the source — `backend/`, `src/` and
+`scripts/` — **found by reading the source each time** rather than from a list
+somebody maintains. A maintained list is precisely what goes stale.
+
+The first version of this scanned the backend only. That is how it reported a
+clean bill of health while the frontend held an opt-in path to a hosted model
+and a whole sign-in layer belonging to the hosting platform. Scanning one tree
+instead of three is exactly the shape of mistake this check exists to catch,
+and it caught it on itself the moment the trees were widened.
 
 An unclassified host is the finding. The report does not fail on egress
 existing; it fails on egress nobody has explained.
@@ -82,6 +88,7 @@ Three kinds are distinguished, because they are three different disclosures:
 | **Written into a generated page; the viewer's browser calls it** | `fonts.googleapis.com`, `fonts.gstatic.com` |
 | **A link on a generated page; only a visitor who clicks it** | `maps.google.com`, `wa.me` |
 | **Never fetched by anyone** | `schema.org` — a JSON-LD vocabulary identifier |
+| **Can carry data off the machine — switched off** | `api.x.ai`, `grok.com`, `gate.grok.me`, `auth.grok.me` |
 
 Only the first is egress by the desk. **`api.qrserver.com` receives the URL of
 a generated mock page** when a flyer QR is printed, and only when a public host
@@ -89,9 +96,32 @@ has been configured — a localhost URL will not produce a QR at all, because a
 QR pointing at localhost dies the moment it leaves the Wi-Fi. No client data is
 involved either way: a flyer advertises a shop, not a client.
 
-Running this check for the first time surfaced three hosts nobody had
-classified. All three turned out to be benign links on generated shop pages —
-which is the useful outcome, because until it ran, "benign" was an assumption.
+### Switched off is not absent
+
+Two things in the code can carry data off the machine, and both are off in a
+default install. They are listed **every time the check runs**, because "off"
+is a statement about configuration and configuration is what changes.
+
+- **`api.x.ai`** — a hosted chat model. Reached only when `FORTITUDO_LLM=xai`
+  is set with an API key; the local path never falls back to it, and the error
+  message on a dead local model says so explicitly rather than quietly
+  rerouting. The Social room calls it whenever a key is present.
+- **`grok.com`, `gate.grok.me`, `auth.grok.me`, `gate.app-builder-testing.com`**
+  — sign-in scaffolding belonging to the platform the web build was scaffolded
+  on. Inert unless the app is deployed there with `GROK_PROJECT_ID` set and
+  auth enabled. On a desk run locally, nothing contacts them.
+
+Neither is a defect. Both would be a surprise to a compliance officer who had
+been told "nothing leaves the machine", which is why they are named.
+
+### What running it surfaced
+
+Three unclassified hosts in the backend — all benign links on generated shop
+pages, which is the useful outcome, because until it ran "benign" was an
+assumption.
+
+Then, once the scan was widened past the backend, the hosted-model path and the
+platform sign-in layer above — neither of which any document had mentioned.
 
 ## What this does not check
 
@@ -110,11 +140,16 @@ which is the useful outcome, because until it ran, "benign" was an assumption.
 ## The short answer, for a form
 
 > All client information is held on the adviser's own machine, in a single data
-> root, and all model inference runs locally on that machine. No client
-> information is transmitted to any third party or across any border. The one
-> outbound request the software makes is to a QR-code image service, and only
-> when printing a marketing flyer for a small business — it carries a public
-> web address and no client information.
+> root, and all model inference for advice work runs locally on that machine.
+> No client information is transmitted to any third party or across any border.
+> The one outbound request the software makes in normal operation is to a
+> QR-code image service, and only when printing a marketing flyer for a small
+> business — it carries a public web address and no client information.
+>
+> The software also contains an opt-in path to a hosted language model and a
+> sign-in layer for a hosting platform. Both are disabled in this installation,
+> the local model path does not fall back to the hosted one, and neither is
+> used for advice work or for anything touching a client file.
 
 Every clause of that is checked by `residency.py` and by the `data residency`
 section of the evaluation harness, so it fails rather than drifting.

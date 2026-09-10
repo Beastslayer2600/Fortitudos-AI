@@ -3445,6 +3445,50 @@ class TheDeskCanSayWhereTheDataIs(unittest.TestCase):
                          encoding="utf-8")
             self.assertEqual(self.res.external([f]), [])
 
+    def test_the_scan_covers_the_frontend_too(self):
+        """The first version read the backend only, and so never saw that the
+        frontend has an opt-in path to a hosted model — exactly the kind of
+        thing this exists to find, and exactly what it misses by looking in
+        one place."""
+        scanned = {p.as_posix() for p in self.res.scanned_files()}
+        self.assertTrue(any("/src/lib/" in p for p in scanned),
+                        "the residency scan does not read the frontend")
+        self.assertTrue(any("/backend/" in p for p in scanned))
+        self.assertFalse(any("node_modules" in p for p in scanned))
+
+    def test_the_opt_in_remote_model_is_reported_not_hidden(self):
+        by_host = {e.host: e for e in self.res.external()}
+        self.assertIn("api.x.ai", by_host)
+        self.assertEqual(by_host["api.x.ai"].who_calls,
+                         self.res.OPT_IN_REMOTE_MODEL)
+        self.assertIn("A PROMPT LEAVES THE MACHINE", by_host["api.x.ai"].who_calls)
+
+    def test_things_that_are_merely_switched_off_are_still_listed(self):
+        """Off by configuration is not the same as absent, and a residency
+        answer listing only what is active would be true on the day it was
+        written."""
+        rep = self.res.check()
+        hosts = {e.host for e in rep.can_leave_the_machine}
+        self.assertIn("api.x.ai", hosts)
+        self.assertIn("grok.com", hosts)
+        self.assertIn("Off by configuration, which is not the same as absent",
+                      self.res.render(rep))
+
+    def test_the_local_path_still_never_falls_back_to_the_remote_one(self):
+        """The document's claim, checked against the code that implements it."""
+        src = (Path(__file__).parent.parent / "src" / "lib" / "llm.ts").read_text(
+            encoding="utf-8")
+        auto = src[src.index("// auto is local"):]
+        self.assertNotIn("callXai", auto,
+                         "the local path falls back to the hosted model again")
+
+    def test_a_documentation_placeholder_address_is_not_egress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "doc.py"
+            f.write_text('"""Set the host to http://192.168.x.x:11434."""\n',
+                         encoding="utf-8")
+            self.assertEqual(self.res.external([f]), [])
+
     def test_the_report_admits_what_it_cannot_check(self):
         self.assertIn("does not check that the disk is encrypted",
                       self.res.render())

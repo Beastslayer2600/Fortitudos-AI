@@ -103,12 +103,32 @@ function NavBody({ pathname, onNavigate }: { pathname: string; onNavigate?: () =
       </nav>
       <div className="border-t border-border px-5 py-4 text-[11px] text-subtle">
         Fast index. Advice remains yours under FAIS.
-        <a href="https://wa.me/27773866299" className="mt-2 flex items-center gap-1.5 text-muted">
-          <FolderOpen className="size-3" /> {identity().studioName}
-        </a>
+        {waLink() ? (
+          <a href={waLink()} className="mt-2 flex items-center gap-1.5 text-muted">
+            <FolderOpen className="size-3" /> {identity().studioName}
+          </a>
+        ) : (
+          <span className="mt-2 flex items-center gap-1.5 text-muted">
+            <FolderOpen className="size-3" /> {identity().studioName}
+          </span>
+        )}
       </div>
     </div>
   );
+}
+
+/**
+ * The studio's own WhatsApp, from the configured phone.
+ *
+ * This was a hardcoded wa.me number, and the ring-fence did not catch it: the
+ * configured phone carries spaces and a plus, the URL is bare digits, so a
+ * literal search for one never found the other. fence.py now compares digit
+ * runs as well as literal text.
+ */
+function waLink(): string {
+  const digits = identity().contactPhone.replace(/\D/g, "");
+  if (digits.length < 10) return "";
+  return `https://wa.me/${digits.startsWith("0") ? `27${digits.slice(1)}` : digits}`;
 }
 
 function NavLink({ item, pathname, onNavigate }: { item: (typeof NAV)[number]; pathname: string; onNavigate?: () => void }) {

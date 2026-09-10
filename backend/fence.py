@@ -81,6 +81,15 @@ FENCED_FIELDS = ("adviser_name", "fsp_name", "fsp_number", "practice_name",
 # an FSP number would match every line with a five in it.
 MIN_VALUE_LENGTH = 4
 
+# A run of digits long enough to be a phone number rather than a coincidence.
+# Below this, stripping punctuation and comparing digits matches version
+# strings, ports and array indices.
+MIN_DIGIT_RUN = 9
+
+
+def _digits(text: str) -> str:
+    return re.sub(r"\D", "", text or "")
+
 
 @dataclass
 class Breach:
@@ -184,10 +193,19 @@ def check(extra: Sequence[str] = ()) -> Report:
             continue
         lowered = text.lower()
         for value, why in values:
-            if value.lower() not in lowered:
+            # A phone number is the same fact written several ways. The first
+            # version of this compared literal text only, and missed a
+            # hardcoded wa.me link because the configured number carries
+            # spaces and a plus while the URL is bare digits.
+            digits = _digits(value)
+            hunting_digits = len(digits) >= MIN_DIGIT_RUN
+            if value.lower() not in lowered and not (
+                    hunting_digits and digits in _digits(text)):
                 continue
             for n, line in enumerate(text.splitlines(), start=1):
-                if value.lower() in line.lower():
+                hit = value.lower() in line.lower() or (
+                    hunting_digits and digits in _digits(line))
+                if hit:
                     rep.breaches.append(Breach(path=rel, line=n, value=value,
                                                why=why, text=line.strip()[:120]))
     return rep

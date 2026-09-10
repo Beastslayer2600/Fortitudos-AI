@@ -32,7 +32,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-ROOT = Path(__file__).resolve().parent
+BACKEND = Path(__file__).resolve().parent
+ROOT = BACKEND.parent
+
+# Every tree that is part of the desk. The first version of this scanned the
+# backend only, and so never saw that the frontend has an opt-in path to a
+# hosted model — which is exactly the kind of thing a residency check exists to
+# find, and exactly the kind of thing it misses by looking in one place.
+SCANNED_TREES = ("backend", "src", "scripts")
 
 # Hosts that are this machine. Anything else is somewhere else, including a
 # machine on the same desk — a second PC on the LAN is still a network hop and
@@ -49,6 +56,16 @@ LINKED_FOR_A_HUMAN = "a link on a generated page; only a visitor who clicks it"
 # A vocabulary identifier in JSON-LD. It looks like a URL and is never resolved
 # by anything — reporting it as egress would be wrong.
 NEVER_RESOLVED = "a JSON-LD vocabulary identifier; never fetched by anyone"
+# The one category that can carry a prompt off the machine. Off unless a key is
+# set and the switch is thrown, and reported every time either way, because
+# "off by default" is a claim about configuration and configuration changes.
+OPT_IN_REMOTE_MODEL = ("A PROMPT LEAVES THE MACHINE when this is switched on. "
+                       "Off by default; the local path never falls back to it.")
+# Sign-in scaffolding belonging to the hosting platform the web build was
+# scaffolded on. Inert on a desk run locally, and reported anyway: "inert"
+# is a statement about configuration, and configuration is what changes.
+PLATFORM_SIGN_IN = ("hosting-platform sign-in; inert unless the app is deployed "
+                    "there with GROK_PROJECT_ID set and auth enabled")
 
 # Where each known external endpoint comes from, so the report can say what it
 # is for rather than only that it exists. An endpoint not listed here is still
@@ -60,11 +77,23 @@ KNOWN = {
     "maps.google.com": ("directions link on a shop page", LINKED_FOR_A_HUMAN),
     "wa.me": ("WhatsApp link on a shop page", LINKED_FOR_A_HUMAN),
     "schema.org": ("structured-data vocabulary", NEVER_RESOLVED),
+    "api.x.ai": ("hosted chat model, only when explicitly switched on",
+                 OPT_IN_REMOTE_MODEL),
+    "grok.com": ("sign-in token issuer", PLATFORM_SIGN_IN),
+    "gate.grok.me": ("sign-in gate", PLATFORM_SIGN_IN),
+    "auth.grok.me": ("sign-in gate", PLATFORM_SIGN_IN),
+    "gate.app-builder-testing.com": ("sign-in gate, test environment",
+                                     PLATFORM_SIGN_IN),
 }
+
+# Endpoints that can carry a prompt or an identity off the machine, whatever
+# their current configuration. Named so the report can say "this is the list
+# that matters" rather than leaving a reader to work it out from a table.
+CARRIES_DATA_OFF_MACHINE = (OPT_IN_REMOTE_MODEL, PLATFORM_SIGN_IN)
 
 URL_RE = re.compile(r"https?://([A-Za-z0-9._-]+)")
 
-SOURCE_SUFFIXES = {".py", ".html"}
+SOURCE_SUFFIXES = {".py", ".html", ".ts", ".tsx", ".js", ".jsx"}
 
 
 @dataclass
@@ -123,6 +152,18 @@ class Report:
     @property
     def unclassified(self) -> List[External]:
         return [e for e in self.external if not e.classified]
+
+    @property
+    def can_leave_the_machine(self) -> List[External]:
+        """Classified, understood, and still worth stating every time.
+
+        These are switched off, and every one of them is off *by
+        configuration*. That is not the same as absent, and a residency answer
+        that only listed what is currently active would be true on the day it
+        was written.
+        """
+        return [e for e in self.external
+                if e.who_calls in CARRIES_DATA_OFF_MACHINE]
 
     @property
     def ok(self) -> bool:
@@ -202,13 +243,40 @@ def external(paths: Optional[Sequence[Path]] = None) -> List[External]:
     maintained list is exactly what goes stale the week somebody adds a font.
     """
     if paths is None:
-        paths = [p for p in sorted(ROOT.rglob("*"))
-                 if p.is_file() and p.suffix in SOURCE_SUFFIXES
-                 and "__pycache__" not in p.as_posix()
-                 # Test and evaluation files name hosts in order to check this
-                 # scan. Reading them would make every fixture a finding.
-                 and not p.name.startswith("test_")
-                 and p.name not in ("eval_desk.py",)]
+        paths = scanned_files()
+    return _scan(paths)
+
+
+def scanned_files() -> List[Path]:
+    """Every source file the outbound scan reads.
+
+    Exposed so a test can assert what is covered without reimplementing the
+    walk or spying on file reads — the coverage is the thing worth checking,
+    since scanning one tree instead of three is how the first version came to
+    miss the frontend entirely.
+    """
+    paths: List[Path] = []
+    for tree in SCANNED_TREES:
+        base = ROOT / tree
+        if not base.exists():
+            continue
+        for p in sorted(base.rglob("*")):
+            rel = p.as_posix()
+            if not p.is_file() or p.suffix not in SOURCE_SUFFIXES:
+                continue
+            if "__pycache__" in rel or "node_modules" in rel:
+                continue
+            # Test and evaluation files name hosts in order to check this
+            # scan. Reading them would make every fixture a finding.
+            if p.name.startswith("test_") or p.name.endswith(".test.ts"):
+                continue
+            if p.name in ("eval_desk.py",):
+                continue
+            paths.append(p)
+    return paths
+
+
+def _scan(paths: Sequence[Path]) -> List[External]:
     seen: Dict[str, External] = {}
     for path in paths:
         try:
@@ -239,9 +307,10 @@ def _looks_like_a_placeholder(host: str) -> bool:
                            ".invalid", ".test"))
             or host in {"your-host", "example.com"}
             # A LAN address is a real hop and is reported by hops(), not here;
-            # naming it in a comment about configuration is not egress.
-            or re.fullmatch(r"192\.168\.\d+\.\d+", host) is not None
-            or re.fullmatch(r"10\.\d+\.\d+\.\d+", host) is not None)
+            # naming it in a comment about configuration is not egress. The
+            # "x" forms are how the docs write an address the reader fills in.
+            or re.fullmatch(r"192\.168\.(\d+|x+)\.(\d+|x+)", host) is not None
+            or re.fullmatch(r"10\.(\d+|x+)\.(\d+|x+)\.(\d+|x+)", host) is not None)
 
 
 def check() -> Report:
@@ -283,6 +352,12 @@ def render(rep: Optional[Report] = None) -> str:
         if e.who_calls:
             lines.append(f"       {e.who_calls}")
         lines.append(f"       {', '.join(e.where[:3])}")
+
+    if rep.can_leave_the_machine:
+        lines += ["", "  Switched off, but present in the code"]
+        for e in rep.can_leave_the_machine:
+            lines.append(f"     {e.host:<32} {e.purpose}")
+        lines.append("     Off by configuration, which is not the same as absent.")
 
     lines += ["", "-" * 62]
     if rep.ok:
